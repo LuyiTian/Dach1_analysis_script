@@ -1,0 +1,386 @@
+---
+title: "process NN126 Seuratv3"
+output: html_notebook
+---
+
+```{r}
+library(scPipe)
+library(scater)
+library(scran)
+library(ggplot2)
+library(Seurat)
+library(cowplot)
+library(sctransform)
+library(dplyr)
+library(readr)
+library(ggrepel)
+```
+
+
+
+
+```{r}
+gene_filter = function(sce){
+  keep1 = (apply(counts(sce), 1, function(x) mean(x[x>0])) > 1.1)  # average count larger than 1.1
+  keep2 = (rowSums(counts(sce)>0) > 5) # expressed in more than 5 cells
+  sce = sce[(keep1 & keep2), ]
+  return(sce)
+}
+scran_norm = function(sce){
+  sce = computeSumFactors(sce)
+  sce = normalize(sce)
+  return(sce)
+}
+scran_high_var = function(sce,topn=3000){
+  var.fit <- trendVar(sce, method="loess", use.spikes=FALSE)
+  var.out <- decomposeVar(sce, var.fit)
+  hvg.out <- var.out[order(var.out$bio, decreasing=TRUE)[1:topn], ]
+  rowData(sce)$hi_var = FALSE
+  rowData(sce)$hi_var[rownames(rowData(sce)) %in% rownames(hvg.out)] = TRUE
+  return(sce)
+}
+```
+
+
+```{r}
+sce_LC187 = create_sce_by_dir(datadir="/Users/tian.l/Dropbox/research/Dach1_paper/NN126/LC187",organism="mmusculus_gene_ensembl",gene_id_type="ensembl_gene_id")
+sce_LC188 = create_sce_by_dir(datadir="/Users/tian.l/Dropbox/research/Dach1_paper/NN126/LC188",organism="mmusculus_gene_ensembl",gene_id_type="ensembl_gene_id")
+sce_LC189 = create_sce_by_dir(datadir="/Users/tian.l/Dropbox/research/Dach1_paper/NN126/LC189",organism="mmusculus_gene_ensembl",gene_id_type="ensembl_gene_id")
+sce_LC190 = create_sce_by_dir(datadir="/Users/tian.l/Dropbox/research/Dach1_paper/NN126/LC190",organism="mmusculus_gene_ensembl",gene_id_type="ensembl_gene_id")
+```
+
+
+
+```{r}
+sce_LC187 = calculate_QC_metrics(sce_LC187)
+sce_LC188 = calculate_QC_metrics(sce_LC188)
+sce_LC189 = calculate_QC_metrics(sce_LC189)
+sce_LC190 = calculate_QC_metrics(sce_LC190)
+```
+
+
+
+```{r}
+sce_LC187_qc = detect_outlier(sce_LC187,comp = 2)
+sce_LC188_qc = detect_outlier(sce_LC188,comp = 2)
+sce_LC189_qc = detect_outlier(sce_LC189,comp = 2)
+sce_LC190_qc = detect_outlier(sce_LC190,comp = 2)
+
+sce_LC187_qc = remove_outliers(sce_LC187_qc)
+sce_LC188_qc = remove_outliers(sce_LC188_qc)
+sce_LC189_qc = remove_outliers(sce_LC189_qc)
+sce_LC190_qc = remove_outliers(sce_LC190_qc)
+
+sce_LC187_qc = gene_filter(sce_LC187_qc)
+sce_LC188_qc = gene_filter(sce_LC188_qc)
+sce_LC189_qc = gene_filter(sce_LC189_qc)
+sce_LC190_qc = gene_filter(sce_LC190_qc)
+
+
+
+sce_LC187_qc = convert_geneid(sce_LC187_qc)
+sce_LC188_qc = convert_geneid(sce_LC188_qc)
+sce_LC189_qc = convert_geneid(sce_LC189_qc)
+sce_LC190_qc = convert_geneid(sce_LC190_qc)
+
+comm_genes = Reduce(intersect,list(rownames(sce_LC187_qc),
+                                   rownames(sce_LC188_qc),
+                                   rownames(sce_LC189_qc),
+                                   rownames(sce_LC190_qc)))
+
+comm_genes = comm_genes[!grepl("ENSMUSG",comm_genes)]
+comm_genes = comm_genes[!grepl("ERCC",comm_genes)]
+comm_genes = comm_genes[!grepl("Rik",comm_genes)]
+comm_genes = comm_genes[!grepl("Hist",comm_genes)]
+comm_genes = comm_genes[!grepl("^Rpl",comm_genes)]
+comm_genes = comm_genes[!grepl("^Rps",comm_genes)]
+
+sce_LC187_qc = sce_LC187_qc[comm_genes,]
+sce_LC188_qc = sce_LC188_qc[comm_genes,]
+sce_LC189_qc = sce_LC189_qc[comm_genes,]
+sce_LC190_qc = sce_LC190_qc[comm_genes,]
+
+```
+```{r}
+colnames(sce_LC187_qc) = paste("LC187",colnames(sce_LC187_qc),sep="_")
+colnames(sce_LC188_qc) = paste("LC188",colnames(sce_LC188_qc),sep="_")
+colnames(sce_LC189_qc) = paste("LC189",colnames(sce_LC189_qc),sep="_")
+colnames(sce_LC190_qc) = paste("LC190",colnames(sce_LC190_qc),sep="_")
+sce_LC187_qc$batch = "LC187"
+sce_LC188_qc$batch = "LC188"
+sce_LC189_qc$batch = "LC189"
+sce_LC190_qc$batch = "LC190"
+```
+
+```{r}
+#FACS_anno <- read.csv("~/Dropbox/research/Dach1_paper/NN126/Dach1_GFPLib_NN126_SeqPrimer layout_Sara_TomeiJan19.csv", stringsAsFactors=FALSE)
+FACS_anno <- read.csv("~/Dropbox/research/Dach1_paper/NN126/Dach1_GFP_transformed_values.csv", stringsAsFactors=FALSE)
+
+FACS_anno = FACS_anno[!is.na(FACS_anno$Dach1GFP),]
+FACS_anno$cell_id = paste(FACS_anno$Plate,paste0(FACS_anno$Row,FACS_anno$Column),sep="_")
+rownames(FACS_anno) = FACS_anno$cell_id
+FACS_anno = FACS_anno[,c("Dach1GFP","CD11b","CD150","CD127",
+                         "cKit","CD135","Sca1","PI")]
+# FACS_anno = apply(FACS_anno,2,function(x){log10(x-min(min(x),0)+1)})
+# FACS_anno = as.data.frame(FACS_anno)
+# FACS_anno$CD135[FACS_anno$CD135<2] = 2
+# FACS_anno$CD150[FACS_anno$CD150<1.4] = 1.4
+# FACS_anno$CD11b[FACS_anno$CD11b<1.8] = 1.8
+# FACS_anno$CD127[FACS_anno$CD127<1.5] = 1.5
+# FACS_anno$Dach1GFP[FACS_anno$Dach1GFP<1.9] = 1.9
+
+pdf("marker_scaled_plot.pdf")
+ggplot(data=FACS_anno,aes(x=Dach1GFP,y=CD135,col=CD127))+
+  geom_point(alpha=0.5)+
+  scale_color_gradientn(colours = rev(rainbow(5)))+
+  theme_bw()
+ggplot(data=FACS_anno,aes(x=CD135,y=CD150,col=CD127))+
+  geom_point(alpha=0.5)+
+  scale_color_gradientn(colours = rev(rainbow(5)))+
+  theme_bw()
+ggplot(data=FACS_anno,aes(x=CD127,y=cKit))+
+  geom_point(alpha=0.5)+
+  theme_bw()
+ggplot(data=FACS_anno,aes(x=CD135,y=CD127))+
+  geom_point(alpha=0.5)+
+  theme_bw()
+dev.off()
+
+colData(sce_LC187_qc) = cbind(colData(sce_LC187_qc),DataFrame(FACS_anno[colnames(sce_LC187_qc),]))
+colData(sce_LC188_qc) = cbind(colData(sce_LC188_qc),DataFrame(FACS_anno[colnames(sce_LC188_qc),]))
+colData(sce_LC189_qc) = cbind(colData(sce_LC189_qc),DataFrame(FACS_anno[colnames(sce_LC189_qc),]))
+colData(sce_LC190_qc) = cbind(colData(sce_LC190_qc),DataFrame(FACS_anno[colnames(sce_LC190_qc),]))
+```
+
+
+```{r,warning=FALSE,message=FALSE,results='hide'}
+srt_187 <- CreateSeuratObject(counts = counts(sce_LC187_qc),meta.data=as.data.frame(colData(sce_LC187_qc)))
+srt_187 <- SCTransform(object = srt_187, variable.features.n=2000, verbose = FALSE)
+
+srt_188 <- CreateSeuratObject(counts = counts(sce_LC188_qc),meta.data=as.data.frame(colData(sce_LC188_qc)))
+srt_188 <- SCTransform(object = srt_188, variable.features.n=2000,verbose = FALSE)
+
+srt_189 <- CreateSeuratObject(counts = counts(sce_LC189_qc),meta.data=as.data.frame(colData(sce_LC189_qc)))
+srt_189 <- SCTransform(object = srt_189, variable.features.n=2000,verbose = FALSE)
+
+srt_190 <- CreateSeuratObject(counts = counts(sce_LC190_qc),meta.data=as.data.frame(colData(sce_LC190_qc)))
+srt_190 <- SCTransform(object = srt_190, variable.features.n=2000,verbose = FALSE)
+```
+
+```{r}
+options(future.globals.maxSize = 2100 * 1024^2)
+immune.features <- SelectIntegrationFeatures(object.list = list(srt_187, srt_188, srt_189, srt_190), nfeatures = 2000, verbose = FALSE)
+immune.combined <- PrepSCTIntegration(object.list = list(srt_187, srt_188, srt_189, srt_190), anchor.features = immune.features, verbose = FALSE)
+
+immune.anchors <- FindIntegrationAnchors(object.list = immune.combined, normalization.method = "SCT", 
+                                         anchor.features = immune.features, verbose = FALSE)
+srt_combine <- IntegrateData(anchorset = immune.anchors, normalization.method = "SCT", dims = 1:20,
+                                 verbose = FALSE)
+```
+
+
+```{r}
+srt_combine = FindIntegrationAnchors(object.list = list(srt_187, srt_188, srt_189, srt_190), dims = 1:15, verbose = FALSE)
+srt_combine <- IntegrateData(anchorset = srt_combine, dims = 1:15, verbose = FALSE)
+DefaultAssay(object = srt_combine) <- "integrated"
+srt_combine <- ScaleData(object = srt_combine, verbose = FALSE)
+```
+
+```{r,warning=FALSE,message=FALSE,results='hide'}
+srt_combine <- RunPCA(object = srt_combine, verbose = FALSE)
+srt_combine <- RunUMAP(object = srt_combine, dims = 1:15, verbose = FALSE)
+srt_combine <- FindNeighbors(object = srt_combine, dims = 1:15, verbose = FALSE)
+srt_combine <- FindClusters(object = srt_combine, verbose = FALSE)
+# Visualization
+p1 <- DimPlot(srt_combine, reduction = "umap", group.by = "batch")
+p2 <- DimPlot(srt_combine, reduction = "umap", label = TRUE)
+```
+
+```{r,fig.width=10,fig.height=5}
+plot_grid(p1, p2)
+```
+
+
+```{r,fig.height=8,fig.width=10}
+srt_combine = srt_combine[,!is.na(srt_combine$Dach1GFP)]
+FeaturePlot(object = srt_combine, features =c("Dach1GFP","CD11b","CD150","CD127","cKit","CD135","Sca1","PI"), pt.size = 0.5)
+```
+
+
+```{r,fig.height=7,fig.width=7}
+VlnPlot(object = srt_combine, features= c("Gata2","Dntt","Ctsg","Dach1","Gata1"),ncol=2,pt.size=0.1)
+```
+
+
+```{r}
+srt_combine.markers <- FindAllMarkers(srt_combine, only.pos = TRUE,verbose=FALSE)
+```
+
+```{r,fig.height=12,fig.width=10}
+top10 <- srt_combine.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+DoHeatmap(srt_combine, features = top10$gene)
+```
+
+```{r,fig.height=7,fig.width=7}
+VlnPlot(object = srt_combine[,!is.na(srt_combine$CD135)], features= c("Dach1GFP","CD150","CD135","CD127","cKit"),ncol=2,pt.size=0.1)
+```
+
+
+```{r}
+CD127_threshold = 900
+ggplot(data=NULL,aes(x=srt_combine@meta.data$CD135,y=srt_combine@meta.data$CD127,col=srt_combine@active.ident))+
+  geom_hline(yintercept = CD127_threshold,linetype="dotted")+
+  geom_point(alpha=0.5,size=2)+
+  labs(x="CD135",y="CD127")+
+  theme_bw()
+ggplot(data=NULL,aes(x=srt_combine@meta.data$cKit,y=srt_combine@meta.data$CD127,col=srt_combine@active.ident))+
+  geom_hline(yintercept = CD127_threshold,linetype="dotted")+
+  geom_point(alpha=0.5,size=2)+
+  labs(x="cKit",y="CD127")+
+  theme_bw()
+```
+
+# filter cells
+
+* remove CD127 high
+* remove cluster 7 and 8
+
+```{r}
+#srt_combine_filter <- SubsetData(object = srt_combine,ident.remove = c(7,8))
+srt_combine_filter <- SubsetData(object = srt_combine_filter, subset.name="CD127",high.threshold=CD127_threshold)
+```
+
+
+```{r,warning=FALSE,message=FALSE,results='hide'}
+srt_combine_filter <- RunPCA(object = srt_combine_filter, verbose = FALSE)
+srt_combine_filter <- RunUMAP(object = srt_combine_filter, dims = 1:15, verbose = FALSE)
+srt_combine_filter <- FindNeighbors(object = srt_combine_filter, dims = 1:15, verbose = FALSE)
+srt_combine_filter <- FindClusters(object = srt_combine_filter, verbose = FALSE)
+# Visualization
+p1 <- DimPlot(srt_combine_filter, reduction = "umap", group.by = "batch")
+p2 <- DimPlot(srt_combine_filter, reduction = "umap", label = TRUE)
+```
+
+```{r,fig.width=10,fig.height=5}
+plot_grid(p1, p2)
+```
+
+# heatmap after filtering
+
+```{r,fig.height=10,fig.width=17}
+srt_combine_filter.markers <- FindAllMarkers(srt_combine_filter, logfc.threshold = 0.1,only.pos = TRUE,verbose=FALSE)
+top10 <- srt_combine_filter.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+DoHeatmap(srt_combine_filter, features = top10$gene)
+```
+
+
+```{r,fig.height=7,fig.width=7}
+VlnPlot(object = srt_combine_filter, features= c("Dach1GFP","CD150","CD135","CD127","cKit"),ncol=2,pt.size=0.1)
+```
+
+```{r,fig.height=8,fig.width=10}
+FeaturePlot(object = srt_combine_filter, features =c("Dach1GFP","CD11b","CD150","CD127","cKit","CD135","Sca1","PI"), pt.size = 0.5)
+```
+
+```{r,fig.width=9,fig.height=8}
+p1=ggplot(data=NULL,aes(x=srt_combine_filter@meta.data$CD135,y=srt_combine_filter@meta.data$CD150,col=srt_combine_filter@active.ident))+
+  geom_point(alpha=0.5,size=2)+
+  labs(x="CD135",y="CD150",col="cluster")+
+  theme_bw()
+p2=ggplot(data=NULL,aes(x=srt_combine_filter@meta.data$Dach1GFP,y=srt_combine_filter@meta.data$CD135,col=srt_combine_filter@active.ident))+
+  geom_point(alpha=0.5,size=2)+
+  labs(x="Dach1GFP",y="CD135",col="cluster")+
+  theme_bw()
+
+p3=ggplot(data=NULL,aes(x=srt_combine_filter@meta.data$cKit,y=srt_combine_filter@meta.data$Sca1,col=srt_combine_filter@active.ident))+
+  geom_point(alpha=0.5,size=2)+
+  labs(x="cKit",y="Sca1",col="cluster")+
+  theme_bw()
+
+p4=ggplot(data=NULL,aes(x=srt_combine_filter@meta.data$CD135,y=srt_combine_filter@meta.data$CD127,col=srt_combine_filter@active.ident))+
+  geom_point(alpha=0.5,size=2)+
+  labs(x="CD135",y="CD127",col="cluster")+
+  theme_bw()
+
+plot_grid(p1, p2, p3, p4,ncol=2)
+```
+
+# find potential surface protein
+
+```{r}
+mouse_surface_protein <- read_csv("~/Dropbox/research/sis_seq/mouse_surface_protein.csv")
+```
+
+```{r}
+surface_pro_name = mouse_surface_protein$`ENTREZ gene symbol`
+surface_pro_name = surface_pro_name[surface_pro_name %in% rownames(srt_combine_filter)]
+length(surface_pro_name)
+```
+
+```{r}
+cluster.surface_markers = srt_combine_filter.markers
+cluster.surface_markers$is_surface_pro=FALSE
+cluster.surface_markers$is_surface_pro[rownames(cluster.surface_markers) %in% surface_pro_name] = TRUE
+cluster.surface_markers = cluster.surface_markers[cluster.surface_markers$is_surface_pro,]
+cluster.surface_markers
+```
+
+# heatmap of all surface proteins
+
+```{r,fig.height=10,fig.width=17}
+DoHeatmap(srt_combine_filter, features = rownames(cluster.surface_markers))
+```
+
+# surface protins that ralated to cluster 2
+
+```{r}
+cluster.surface_markers_2 = cluster.surface_markers[cluster.surface_markers$cluster==2,]
+cluster.surface_markers_2
+```
+
+```{r}
+imm_data = read.csv("/Users/tian.l/Dropbox/research/sis_seq/immgen/V1_ImmGenn-Official-Oct-2012.csv", skip=2, check.names=FALSE, as.is=TRUE)
+cell.fac = gsub("#....", "", colnames(imm_data))
+cell.fac = gsub("#...", "", cell.fac)
+cell.fac = gsub("#.", "", cell.fac)
+cell.fac =  gsub("\\.", "_", cell.fac)
+cell.fac =  gsub("\\-", "neg", cell.fac)
+cell.fac =  gsub("\\+", "pos", cell.fac)
+cell.fac =  gsub("\\/", "div", cell.fac)
+colnames(imm_data) = cell.fac
+
+imm_data_surface = imm_data[imm_data$`Gene Symbol` %in% cluster.surface_markers_2$gene,]
+imm_data_surface = imm_data_surface[!duplicated(imm_data_surface$`Gene Symbol`),]
+rownames(imm_data_surface) = imm_data_surface$`Gene Symbol`
+imm_data_surface=imm_data_surface[,-c(1,2)]
+imm_data_surface = as.matrix(imm_data_surface)
+
+pdf("cluster2_surface_protein.immgen.pdf",width=15,height = 80)
+pheatmap::pheatmap(t(log2(imm_data_surface+1)),scale = "column",fontsize_col=3,fontsize_row=10)
+dev.off()
+```
+
+```{r}
+clu2.markers = FindMarkers(srt_combine_filter,ident.1=2,verbose = FALSE)
+clu2.markers
+```
+
+```{r,fig.width=10,fig.height=6}
+clu2.markers$gene_name = ""
+clu2.markers$gene_name[clu2.markers$p_val_adj<0.0001 & clu2.markers$avg_logFC<0]= rownames(clu2.markers)[clu2.markers$p_val_adj<0.0001 & clu2.markers$avg_logFC<0]
+clu2.markers$gene_name[clu2.markers$p_val_adj<1e-7 & clu2.markers$avg_logFC>0]= rownames(clu2.markers)[clu2.markers$p_val_adj<1e-7 & clu2.markers$avg_logFC>0]
+
+ggplot(data=clu2.markers,aes(x=-log10(p_val_adj),y=avg_logFC,label=gene_name))+
+  geom_point()+
+  geom_vline(xintercept = 2,linetype="dotted")+
+  geom_text_repel()+
+  theme_bw()
+```
+
+
+
+
+```{r}
+save.image("~/Dropbox/research/Dach1_paper/NN126/NN126_Seurat_analysis.RData")
+```
+

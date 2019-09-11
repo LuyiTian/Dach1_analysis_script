@@ -1,0 +1,853 @@
+---
+title: "Dach1 scatter plot"
+output:
+  html_notebook:
+    code_folding: hide
+    toc: true
+    toc_float: true
+    collapsed: false
+    fig_height: 15
+    fig_width: 20
+---
+
+```{r}
+markers_for_heatmap <- function(markers) {
+    res <- NULL
+    for (i in unique(markers[, 1])) {
+        tmp <- markers[markers[, 1] == i, ]
+        if (nrow(tmp) > 10) {
+            res <- rbind(res, tmp[1:10, ])
+        } else {
+            res <- rbind(res, tmp)
+        }
+    }
+    
+    return(res)
+}
+organise_marker_genes <- function(object, k, p_val, auroc) {
+    dat <- rowData(object)[, c(paste0("sc3_", k, "_markers_clusts"), paste0("sc3_", k, 
+        "_markers_auroc"), paste0("sc3_", k, "_markers_padj"), "feature_symbol")]
+    dat <- dat[dat[, paste0("sc3_", k, "_markers_padj")] < p_val & !is.na(dat[, paste0("sc3_", 
+        k, "_markers_padj")]), ]
+    dat <- dat[dat[, paste0("sc3_", k, "_markers_auroc")] > auroc, ]
+    
+    d <- NULL
+    
+    for (i in sort(unique(dat[, paste0("sc3_", k, "_markers_clusts")]))) {
+        tmp <- dat[dat[, paste0("sc3_", k, "_markers_clusts")] == i, ]
+        tmp <- tmp[order(tmp[, paste0("sc3_", k, "_markers_auroc")], decreasing = TRUE), ]
+        d <- rbind(d, tmp)
+    }
+    
+    return(d)
+}
+
+make_col_ann_for_heatmaps <- function(object, show_pdata) {
+    if (any(!show_pdata %in% colnames(colData(object)))) {
+        show_pdata_excl <- show_pdata[!show_pdata %in% colnames(colData(object))]
+        show_pdata <- show_pdata[show_pdata %in% colnames(colData(object))]
+        message(paste0("Provided columns '", paste(show_pdata_excl, collapse = "', '"), "' do not exist in the phenoData table!"))
+        if (length(show_pdata) == 0) {
+            return(NULL)
+        }
+    }
+    ann <- NULL
+    if (is.null(metadata(object)$sc3$svm_train_inds)) {
+        ann <- colData(object)[, colnames(colData(object)) %in% show_pdata]
+    } else {
+        ann <- colData(object)[metadata(object)$sc3$svm_train_inds, colnames(colData(object)) %in% 
+            show_pdata]
+    }
+    # remove columns with 1 value only
+    if (length(show_pdata) > 1) {
+        keep <- unlist(lapply(ann, function(x) {
+            length(unique(x))
+        })) > 1
+        if (!all(keep)) {
+            message(paste0("Columns '", paste(names(keep)[!keep], collapse = "', '"), "' were excluded from annotation since they contained only a single value."))
+        }
+        ann <- ann[, names(keep)[keep]]
+        if (ncol(ann) == 0) {
+            ann <- NULL
+        } else {
+            ann <- as.data.frame(lapply(ann, function(x) {
+                if (nlevels(as.factor(x)) > 9) 
+                  x else as.factor(x)
+            }))
+            # convert outlier scores back to numeric
+            for (i in grep("_log2_outlier_score", colnames(ann))) {
+                if (class(ann[, i]) == "factor") {
+                  ann[, i] <- as.numeric(levels(ann[, i]))[ann[, i]]
+                }
+            }
+        }
+    } else {
+        if (length(unique(ann)) > 1) {
+            ann <- as.data.frame(ann)
+            colnames(ann) <- show_pdata
+            if (!grepl("_log2_outlier_score", show_pdata)) {
+                ann <- as.data.frame(lapply(ann, function(x) {
+                  if (nlevels(as.factor(x)) > 9) 
+                    return(x) else return(as.factor(x))
+                }))
+            }
+        } else {
+            message(paste0("Column '", show_pdata, "' was excluded from annotation since they contained only a single value."))
+            ann <- NULL
+        }
+    }
+    return(ann)
+}
+
+sc3_plot_markers.new <- function(object, k, auroc, p.val, show_pdata) {
+    if (is.null(metadata(object)$sc3$consensus)) {
+        warning(paste0("Please run sc3_consensus() first!"))
+        return(object)
+    }
+    hc <- metadata(object)$sc3$consensus[[as.character(k)]]$hc
+    dataset <- get_processed_dataset(object)
+    if (!is.null(metadata(object)$sc3$svm_train_inds)) {
+        dataset <- dataset[, metadata(object)$sc3$svm_train_inds]
+    }
+    
+    add_ann_col <- FALSE
+    ann <- NULL
+    if (!is.null(show_pdata)) {
+        ann <- make_col_ann_for_heatmaps(object, show_pdata)
+        if (!is.null(ann)) {
+            add_ann_col <- TRUE
+            # make same names for the annotation table
+            rownames(ann) <- colnames(dataset)
+        }
+    }
+    ann_colors = rep(list(c("grey","white", "firebrick2")),ncol(ann)-sum(sapply(ann, is.factor)))
+    names(ann_colors) = colnames(ann)[!(sapply(ann, is.factor))]
+    
+    # get all marker genes
+    markers <- organise_marker_genes(object, k, p.val, auroc)
+    # get top 10 marker genes of each cluster
+    markers <- markers_for_heatmap(markers)
+    
+    row.ann <- data.frame(Cluster = factor(markers[, 1], levels = unique(markers[, 1])))
+    rownames(row.ann) <- markers$feature_symbol
+    
+    do.call(pheatmap::pheatmap, c(list(dataset[markers$feature_symbol, , drop = FALSE], show_colnames = FALSE, 
+        cluster_rows = FALSE, cluster_cols = hc, cutree_cols = k, annotation_row = row.ann, annotation_colors = ann_colors, annotation_names_row = FALSE, cellheight = 10), list(annotation_col = ann)[add_ann_col]))
+}
+```
+
+
+load the data
+```{r}
+source("sc_func.R")
+suppressMessages(library(Rtsne))
+suppressMessages(library(destiny))
+suppressMessages(library(ggplot2))
+suppressMessages(library(gplots))
+suppressMessages(library(RColorBrewer))
+suppressMessages(library(plotly))
+suppressMessages(library(gridExtra))
+
+
+hmcol<-colorRampPalette(c("blue", "white","red"))(n = 299)
+
+load("sc_192.RData")
+```
+##heatmap
+do PCA+diffusionmap and extract genes correlated with top PC, excepct PCs that related to cell cycles:
+
+```{r}
+pca_out = prcomp(t(log2(expr_data+1)))
+dif <- DiffusionMap( pca_out$x[,c(2,3,5,7,8,9,10,11,12,13,14)],n_eigs = 10)
+dif_GO_list = Diff_GO_enrichment(dif,expr_data,p.val=0.001)
+
+diff_genes = c()
+for(i in 1:10){diff_genes = c(diff_genes,rownames(dif_GO_list$DE_genes[[i]]))}
+DE_expr = expr_data[rownames(expr_data) %in% diff_genes,]
+DE_clean = DE_expr[apply(log2(DE_expr+1),1,mean)<6,]
+DE_clean = DE_clean[rowMeans(DE_clean)>0.6,]
+dim(DE_expr)
+
+
+hr <- hclust(dist(cor(log2(DE_clean+1))))
+
+tsne_ph = Rtsne(log10(ph_data[,!(colnames(ph_data) %in% c("CD11b"))]),pca = FALSE,perplexity = 10)
+tsne_ph1 = Rtsne(log10(ph_data[,!(colnames(ph_data) %in% c("CD11b"))]),dim=1,pca = FALSE,perplexity = 10)
+
+# define some clusters
+mycl <- cutree(hr, k=10)
+table(mycl)
+#mycl[mycl>8] = 8 # exclude rare cluster
+# get a color palette equal to the number of clusters
+#clusterCols <- rainbow(length(unique(mycl)))
+clusterCols = brewer.pal(10, "Set3")
+# create vector of colors for side bar
+myClusterSideBar <- clusterCols[mycl]
+#ph_data$cluster = myClusterSideBar
+DE_hm = heatmap.2(log2(DE_clean[,order(mycl)]+1),
+          Colv=FALSE,
+          trace="none",
+          dendrogram = "none",
+          col=hmcol,
+          density.info = "none",
+          labCol = "",
+          labRow = "",
+          ColSideColors = myClusterSideBar[order(mycl)],
+          key = FALSE
+          )
+
+ma = log2(DE_clean[,order(mycl)]+1)
+ma = ma[DE_hm$rowInd,]
+plot_ly(
+    x = colnames(ma), y = rownames(ma),
+    z = ma, type = "heatmap",colorscale = hmcol
+)
+```
+
+
+```{r}
+database = "immgen"
+immgen_samples <- read.delim(paste0("/Users/tian.l/Dropbox/research/Dach1_paper/ref_data/",database,"_samples.txt"), stringsAsFactors=FALSE)
+immgen_probes <- read.delim(paste0("/Users/tian.l/Dropbox/research/Dach1_paper/ref_data/",database,"_probes.txt"), header=FALSE, stringsAsFactors=FALSE)
+immgen_expression <- read.delim(paste0("/Users/tian.l/Dropbox/research/Dach1_paper/ref_data/",database,"_expression.txt"), stringsAsFactors=FALSE)
+
+library('biomaRt')
+mart <- useDataset("mmusculus_gene_ensembl", useMart("ensembl"))
+G_list <- getBM(filters= "ensembl_gene_id", attributes= c("ensembl_gene_id", "external_gene_name", "description"),values=immgen_probes$V2 ,mart=mart)
+immgen_probes = immgen_probes[immgen_probes$V2 %in% G_list$ensembl_gene_id,]
+G_list = G_list[match(immgen_probes$V2, G_list$ensembl_gene_id),]
+immgen_probes$external_gene_name = G_list$external_gene_name
+
+immgen_expression = immgen_expression[immgen_expression$probeId %in% immgen_probes$V1,]
+immgen_probes = immgen_probes[immgen_probes$V1 %in% immgen_expression$probeId,]
+immgen_probes = immgen_probes[match(immgen_expression$probeId, immgen_probes$V1),]
+immgen_expression$gene_id = immgen_probes$external_gene_name
+immgen_expression = immgen_expression[!duplicated(immgen_expression$gene_id),]
+g_i = immgen_expression$gene_id
+immgen_expression = immgen_expression[,!(colnames(immgen_expression) %in% c("probeId","gene_id"))]
+immgen_expression = as.matrix(immgen_expression)
+rownames(immgen_expression) = g_i
+
+table(immgen_samples$cell_lineage)
+immgen_samples$sampleId = gsub("-",".",immgen_samples$sampleId)
+#SC_list = immgen_samples[immgen_samples$cell_lineage == "Stem Cells", "sampleId"]
+#SC_list = immgen_samples$sampleId
+SC_list = c("SC_CDP_BM","SC_CMP_BM","SC_GMP_BM",
+            "SC_LT34F_BM","SC_LTSL_BM","SC_MDP_BM",
+            "SC_MEP_BM","SC_MPP34F_BM","SC_ST34F_BM",
+            "SC_STSL_BM","proB_CLP_BM","preT_ETP_Th")
+sub_immgen_expression = immgen_expression[rownames(immgen_expression) %in% rownames(DE_expr), colnames(immgen_expression) %in% SC_list]
+sub_immgen_expression = sub_immgen_expression[!duplicated(rownames(sub_immgen_expression)),]
+sub_DE_expr = DE_expr[rownames(DE_expr) %in% rownames(sub_immgen_expression),]
+sub_DE_expr = sub_DE_expr[!duplicated(rownames(sub_DE_expr)),]
+sub_DE_expr = sub_DE_expr[order(rownames(sub_DE_expr)),]
+sub_immgen_expression = sub_immgen_expression[order(rownames(sub_immgen_expression)),]
+
+
+p.val_mat = c()
+for (i in 1:ncol(sub_immgen_expression))
+{
+  p.val_vec = apply(sub_DE_expr, 2, function(x){
+  cor.test(x,sub_immgen_expression[,i],
+         method = "spearman",
+         alternative = "greater",exact=FALSE)$p.value})
+  p.val_mat = rbind(p.val_mat,-log10(p.val_vec))
+}
+rownames(p.val_mat) = colnames(sub_immgen_expression)
+
+hm_immgen = heatmap.2(p.val_mat[,order(mycl)],trace="none",
+          dendrogram="none",
+          Colv=FALSE,
+          col=hmcol,
+          scale="column",
+          labRow = "",
+          #ColSideColors = myClusterSideBar[order(mycl)],
+          labCol = "",
+          density.info="none",
+          key=FALSE)
+
+p_ma = p.val_mat[,order(mycl)]
+p_ma = p_ma[hm_immgen$rowInd,]
+
+m = list(
+  l = 100,
+  r = 40,
+  b = 10,
+  t = 10,
+  pad = 0
+) 
+
+plot_ly(
+    x = colnames(p_ma), y = rownames(p_ma),
+    z = p_ma, type = "heatmap",colorscale = hmcol
+)%>% 
+layout(autosize = F, margin = m)
+```
+
+combine two heatmap:
+
+```{r}
+library(ComplexHeatmap)
+ht1 = Heatmap(t(p.val_mat), name = "Immgen", show_row_names=FALSE, width = 1)
+ht2 = Heatmap(t(log2(DE_clean+1)), name = "RNA-seq", show_row_names=FALSE, show_column_names=FALSE, width = 2)
+ht3 = Heatmap(scale(log10(ph_data[,!(colnames(ph_data)=="CD11b")]+1)), name = "FACS",show_row_names=FALSE, width = 0.5)
+ht_list = draw(ht3+ht2+ht1, main_heatmap = "RNA-seq", km = 10,show_row_dend=FALSE)
+
+#clusterCols = brewer.pal(10, "Set3")
+# create vector of colors for side bar
+#myClusterSideBar <- clusterCols[mycl]
+
+ht_list
+```
+
+
+##t-SNE
+
+```{r}
+
+tsne_diffmap_DE = Rtsne(cor(log2(DE_expr+1)))
+tsne_diffmap_DE1 = Rtsne(cor(log2(DE_expr+1)),dim=1)
+plot(tsne_diffmap_DE$Y[,1], tsne_diffmap_DE$Y[,2])
+
+plot(tsne_diffmap_DE1$Y, tsne_ph1$Y)
+```
+
+##Dach1 correlation
+```{r}
+cor_shalin =cor(t(expr_data),method="spearman")
+
+cor_Dach1 = cor_shalin["Dach1",]
+cor_Dach1 = cor_Dach1[order(cor_Dach1)]
+```
+
+
+genes that positively correlated with Dach1:
+```{r}
+as.data.frame(head(cor_Dach1[order(cor_Dach1,decreasing=TRUE)],n=50))
+```
+some scatter plot:
+```{r}
+g_e = as.data.frame(t(log2(expr_data+1)))
+p1=ggplot(data=g_e,aes(y=Dach1, x=Muc13))+geom_point()
+p2=ggplot(data=g_e,aes(y=Dach1, x=Gata2))+geom_point()
+p3=ggplot(data=g_e,aes(y=Dach1, x=Cdk17))+geom_point()
+p4=ggplot(data=g_e,aes(y=Dach1, x=Sox6))+geom_point()
+
+grid.arrange(p1, p2, p3, p4, ncol=2)
+```
+
+genes that negatively correlated with Dach1:
+
+
+```{r}
+as.data.frame(head(cor_Dach1[order(cor_Dach1)],n=50))
+```
+
+some scatter plot:
+
+```{r}
+p1=ggplot(data=g_e,aes(y=Dach1, x=Evl))+geom_point()
+p2=ggplot(data=g_e,aes(y=Dach1, x=Il12a))+geom_point()
+p3=ggplot(data=g_e,aes(y=Dach1, x=Dntt))+geom_point()
+p4=ggplot(data=g_e,aes(y=Dach1, x=Flt3))+geom_point()
+
+grid.arrange(p1, p2, p3, p4, ncol=2)
+```
+##Dach1 correlation in public data
+data from Gottgens's Blood paper, we only select cells labeled as "HSC" and "LT-HSC".
+```{r}
+coordinates_gene_counts_flow_cytometry <- read.delim("/Users/tian.l/Dropbox/research/Dach1_paper/public_data/coordinates_gene_counts_flow_cytometry.txt", row.names=1, stringsAsFactors=FALSE)
+
+coordinates_gene_counts_flow_cytometry = coordinates_gene_counts_flow_cytometry[complete.cases(coordinates_gene_counts_flow_cytometry),]
+gene_expr = coordinates_gene_counts_flow_cytometry[,-(1:26)]
+phen_data = coordinates_gene_counts_flow_cytometry[,6:15]
+
+gene_expr_t = t(gene_expr)
+G_cor = cor(t(gene_expr_t))
+
+library('biomaRt')
+mart <- useDataset("mmusculus_gene_ensembl", useMart("ensembl"))
+G_list <- getBM(filters= "ensembl_gene_id", attributes= c("ensembl_gene_id", "external_gene_name", "description"),values=rownames(gene_expr_t) ,mart= mart)
+
+gene_expr_t = gene_expr_t[rownames(gene_expr_t) %in% G_list$ensembl_gene_id,]
+G_list = G_list[match(rownames(gene_expr_t), G_list$ensembl_gene_id),]
+rownames(gene_expr_t) = G_list$external_gene_name
+
+gene_expr_sub = gene_expr_t[,coordinates_gene_counts_flow_cytometry$group %in% c("HSC", "LT-HSC")]
+
+
+corr_sub = cor(t(gene_expr_sub), method="spearman")
+
+cor_Dach1_pub = corr_sub["Dach1",]
+cor_Dach1_pub = cor_Dach1_pub[order(cor_Dach1_pub)]
+```
+
+
+genes that positively correlated with Dach1:
+```{r}
+as.data.frame(head(cor_Dach1_pub[order(cor_Dach1_pub,decreasing=TRUE)],n=50))
+```
+
+genes that negatively correlated with Dach1:
+
+
+```{r}
+as.data.frame(head(cor_Dach1_pub[order(cor_Dach1_pub)],n=50))
+```
+Genes that negatively correlated to Dach1 in both dataset (first 50):
+```{r}
+neg = toupper(names(head(cor_Dach1_pub[order(cor_Dach1_pub)],n=50)))
+neg = neg[neg %in% toupper(names(head(cor_Dach1[order(cor_Dach1)],n=50)))]
+neg
+```
+
+Genes that positively correlated to Dach1 in both dataset (first 50):
+```{r}
+pos = toupper(names(head(cor_Dach1_pub[order(cor_Dach1_pub,decreasing=TRUE)],n=50)))
+pos = pos[pos %in% toupper(names(head(cor_Dach1[order(cor_Dach1,decreasing=TRUE)],n=50)))]
+pos
+```
+
+##cell cycle
+
+Cells are classified as being in G1 phase if the G1 score is above 0.5 and greater than the G2/M score; 
+in G2/M phase if the G2/M score is above 0.5 and greater than the G1 score; 
+and in S phase if neither score is above 0.5.
+
+```{r}
+library(scran)
+mm.pairs <- readRDS(system.file("exdata", "mouse_cycle_markers.rds", package="scran")) 
+library(org.Mm.eg.db) 
+anno <- select(org.Mm.eg.db, keys=rownames(expr_data), keytype="SYMBOL", column="ENSEMBL") 
+ensembl <- anno$ENSEMBL[match(rownames(expr_data), anno$SYMBOL)] 
+assignments <- cyclone(log2(expr_data+1), mm.pairs, gene.names=ensembl) 
+ggplot(data=NULL, aes(x=assignments$score$G1, y=assignments$score$G2M, col=log2(expr_data["Dach1",]+1)))+
+  geom_point()+
+  geom_vline(xintercept = .5)+
+  geom_hline(yintercept = .5)
+
+
+```
+
+
+```{r}
+cell_state = rep("S",ncol(expr_data))
+cell_state[assignments$score$G1>0.5] = "G0/G1"
+cell_state[assignments$score$G2M>0.5] = "G2/M"
+dach1 = log2(expr_data["Dach1",]+1)
+ggplot(data=NULL,aes(x=cell_state,y=dach1,fill=cell_state))+
+  geom_violin(alpha=0.7) + geom_jitter(height = 0, width = 0.1)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank())
+```
+
+```{r}
+public_assignments <- cyclone(t(gene_expr)[,coordinates_gene_counts_flow_cytometry$group %in% c("HSC", "LT-HSC")], mm.pairs, gene.names=rownames(t(gene_expr))) 
+ggplot(data=NULL, aes(x=public_assignments$score$G1, y=public_assignments$score$G2M, col=gene_expr_t["Dach1",coordinates_gene_counts_flow_cytometry$group %in% c("HSC", "LT-HSC")]))+
+  geom_point()+
+  labs(x="G1",y="G2M",color="Dach1 expr")+
+  geom_vline(xintercept = .5)+
+  geom_hline(yintercept = .5)
+```
+
+```{r}
+cell_state = rep("S",sum(coordinates_gene_counts_flow_cytometry$group %in% c("HSC", "LT-HSC")))
+cell_state[public_assignments$score$G1>0.5] = "G0/G1"
+cell_state[public_assignments$score$G2M>0.5] = "G2/M"
+dach1 = gene_expr_t["Dach1",]
+ggplot(data=NULL,aes(x=cell_state,y=dach1,fill=cell_state))+
+  geom_violin(alpha=0.7) + geom_jitter(height = 0, width = 0.1)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank())
+```
+
+
+
+```{r}
+library(SC3)
+library(scater)
+#sceset <- newSCESet(countData=DE_clean)
+sceset = SingleCellExperiment(assays=list(counts=DE_expr[!duplicated(rownames(DE_expr)),],logcounts=log2(DE_expr[!duplicated(rownames(DE_expr)),]+1)))
+rowData(sceset)$feature_symbol = rownames(sceset)
+#sceset <- newSCESet(countData=DE_expr[!duplicated(rownames(DE_expr)),])
+sceset = calculateQCMetrics(sceset)
+sceset <- sc3(sceset, ks = 4:8, biology = TRUE,pct_dropout_max=95,rand_seed=19910603,kmeans_nstart=50)
+sceset <- sc3_estimate_k(sceset)
+```
+
+```{r}
+
+sceset$SC_LTSL_BM = p.val_mat["SC_LTSL_BM",]
+sceset$SC_STSL_BM = p.val_mat["SC_STSL_BM",]
+sceset$SC_MEP_BM = p.val_mat["SC_MEP_BM",]
+sceset$SC_CMP_BM = p.val_mat["SC_CMP_BM",]
+sceset$proB_CLP_BM = p.val_mat["proB_CLP_BM",]
+sceset$SC_GMP_BM = p.val_mat["SC_GMP_BM",]
+
+sceset$CD150 = log2(ph_data[, "CD150"]+1)
+sceset$CD135 = log2(ph_data[, "CD135"]+1)
+sceset$CD135[(sceset)$CD135<5] = 5
+sceset$CD127 = log2(ph_data[, "CD127"]+1)
+sceset$CD127[(sceset)$CD127<5] = 5
+sceset$CD16.32 = log2(ph_data[, "CD16.32"]+1)
+sceset$Sca1 = log2(ph_data[, "Sca.1"]+1)
+sceset$cKit = log2(ph_data[, "cKit"]+1)
+#sceset$G1 = assignments$scores$G1
+#sceset$G2M = assignments$scores$G2M
+```
+
+
+
+```{r}
+pdf("Dach1_clusters_IMMGEN.pdf",width = 8,height = 10)
+sc3_plot_markers(sceset, k =  7,show_pdata = c(
+        "SC_LTSL_BM", 
+        "SC_STSL_BM",
+        "SC_MEP_BM",
+        "SC_CMP_BM",
+        "proB_CLP_BM",
+        "SC_GMP_BM",
+        "sc3_7_clusters"
+    ), p.val=0.01,auroc=0.75)
+dev.off()
+```
+
+
+```{r}
+pdf("Dach1_clusters_FACs.pdf",width = 8,height = 9)
+sc3_plot_markers(sceset, k =  7,show_pdata = c(
+        "CD150", 
+        "CD135",
+        "CD127",
+        "CD16.32",
+        "G1",
+        "G2M"
+    ), p.val=0.01,auroc=0.75)
+dev.off()
+```
+
+
+```{r}
+pdf("Dach1_clusters_all.pdf",width = 8,height = 16)
+sc3_plot_markers.new(sceset, k =  5,show_pdata = c(
+        "CD150", 
+        "CD135",
+        "CD127",
+        "CD16.32",
+        "SC_LTSL_BM", 
+        "SC_STSL_BM",
+        "SC_MEP_BM",
+        "SC_CMP_BM",
+        "proB_CLP_BM",
+        "SC_GMP_BM"
+    ), p.val=0.05,auroc=0.6)
+dev.off()
+```
+
+```{r}
+library(edgeR)
+
+
+y = DGEList(counts=expr_data)
+y = estimateCommonDisp(y)
+
+design <- model.matrix(~log(expr_data["Dach1",]+1))
+fit = glmFit(y,design=design)
+
+lrt = glmLRT(fit,coef = 2)
+t = topTags(lrt,n=Inf)
+
+test_df = t@.Data[[1]]
+test_df = test_df[!(rownames(test_df)=="Dach1"),]
+test_df$FDR = -log10(test_df$FDR)
+
+plot(test_df$logFC, test_df$FDR)
+
+```
+
+```{r}
+test_df["Gata2",]
+```
+
+
+```{r}
+library(scran)
+sceall <- newSCESet(countData=expr_data[!duplicated(rownames(expr_data)),])
+sceall = calculateQCMetrics(sceall)
+var.fit <- trendVar(sceall, trend="loess", use.spikes=FALSE, span=0.2)
+var.out <- decomposeVar(sceall, var.fit)
+hvg.out <- var.out[order(var.out$bio, decreasing=TRUE)[1:2000],]
+```
+
+
+```{r}
+scran_cor = correlatePairs(sceall, subset.row=rownames(hvg.out),BPPARAM=MulticoreParam(workers = 4))
+save(scran_cor,file="/Users/tian.l/Dropbox/research/Dach1_paper/scran_cor_top2000.RData")
+```
+
+```{r}
+scran_cor_dach1 = scran_cor[scran_cor$gene1 == "Dach1" | scran_cor$gene2 == "Dach1",]
+the_cor_genes = rep(NA, nrow(scran_cor_dach1))
+the_cor_genes[scran_cor_dach1$gene1 == "Dach1"] = scran_cor_dach1$gene2[scran_cor_dach1$gene1 == "Dach1"]
+the_cor_genes[scran_cor_dach1$gene2 == "Dach1"] = scran_cor_dach1$gene1[scran_cor_dach1$gene2 == "Dach1"]
+
+```
+
+
+```{r}
+library(readr)
+renameME <- read_csv("~/Dropbox/research/Dach1_paper/renameME_LTMPP.csv")
+renameME_DE = renameME[renameME$adj.P.Val<0.05,]
+renameME_DE_CMP = renameME_DE[renameME_DE$FC>1,]
+renameME_DE_CLP = renameME_DE[renameME_DE$FC<1,]
+
+tmp = scran_cor_dach1$rho[scran_cor_dach1$FDR<0.05]
+
+pdf("barcode_plot_Dach1_immgen_LT_MPP.pdf")
+barcodeplot(scran_cor_dach1$rho, index=(the_cor_genes %in% renameME_DE_CMP$Gene_Symbol  ), 
+            index2=(the_cor_genes %in%  renameME_DE_CLP$Gene_Symbol ), main="LTvsMPP34", 
+            labels=c("negative correlation","positive correlation"),
+            quantiles=c(max(tmp[tmp<0]),min(tmp[tmp>0])),
+            xlab="speaman correlation to Dach1 expressions"
+            )
+dev.off()
+```
+
+
+```{r}
+hm20 = colorRampPalette(c("blue", "white","red"))(n = 20)
+side_bar = c("orchid1", "steelblue1")[as.factor(scran_cor_dach1$rho[scran_cor_dach1$FDR<0.05]>0)]
+names(side_bar) = "rho to Dach1"
+top_dach1_DE = the_cor_genes[scran_cor_dach1$FDR<0.05]
+pdf("top_correlated_to_Dach1.pdf")
+heatmap.2(cor(t(log2(expr_data[top_dach1_DE,]+1)),method = "spearman"),
+          trace = "none",
+          col=hmcol, 
+          main="Correlation of genes correlated with Dach1",
+          ColSideColors=side_bar,
+          RowSideColors=side_bar,
+          key.title="speaman rho")
+legend("topright",      
+    legend = c("positive correlated to Dach1", "negatively correlated to Dach1"),
+    col = c("steelblue1","orchid1"),     
+    lty= 1.5,   lwd = 2,           
+    cex=.6)
+dev.off()
+```
+
+```{r}
+CODEX[CODEX$Factor %in% the_cor_genes,]
+scran_cor_dach1[the_cor_genes %in% CODEX$Factor,]
+```
+
+```{r}
+TF_genes = scPipe::get_genes_by_GO(returns="external_gene_name",
+                            dataset="mmusculus_gene_ensembl",
+                            go="GO:0003700")
+```
+
+
+```{r}
+library(RColorBrewer)
+darkcols <- brewer.pal(4, "Dark2")
+sceset$cluster = sceset$sc3_5_clusters
+pdf("FACS_overlay.pdf",width = 4,height = 3.5)
+# cluster = as.factor(sceset$sc3_5_clusters == 1)
+# ggplot(data=as.data.frame(colData(sceset)),aes(x=CD135,y=CD150,col=cluster))+
+#   theme_bw()+
+#   geom_point()+
+#   scale_color_manual(values=c("grey80","red"))+
+#   #labs(color="stem")+
+#   ggtitle("stem")
+#   
+# cluster = as.factor(sceset$sc3_5_clusters %in% c(1,2))
+# ggplot(data=as.data.frame(colData(sceset)),aes(x=CD135,y=CD150,col=cluster))+
+#   theme_bw()+
+#   geom_point()+
+#   scale_color_manual(values=c("grey80","red"))+
+#   #labs(color="stem+MEP")+
+#   ggtitle("stem+MEP")
+#   
+# cluster = as.factor(sceset$sc3_5_clusters %in% c(1,2,3))
+# ggplot(data=as.data.frame(colData(sceset)),aes(x=CD135,y=CD150,col=cluster))+
+#   theme_bw()+
+#   geom_point()+
+#   scale_color_manual(values=c("grey80","red"))+
+#   #labs(color="stem+MEP+myeloid")+
+#   ggtitle("stem+MEP+myeloid")
+
+ggplot(data=as.data.frame(colData(sceset))[sceset$cluster %in% c(4),],aes(x=CD150,y=CD135,col=cluster))+
+  theme_minimal()+
+  geom_point()+
+  xlim(3.5, 10)+
+  ylim(5, 13)+
+  scale_color_manual(values=darkcols[c(4)])+
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  ggtitle("stem")
+
+ggplot(data=as.data.frame(colData(sceset))[sceset$cluster %in% c(2,4),],aes(x=CD150,y=CD135,col=cluster))+
+  theme_minimal()+
+  geom_point()+
+  xlim(3.5, 10)+
+  ylim(5, 13)+
+  scale_color_manual(values=darkcols[c(2,4)])+
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  ggtitle("stem+MEP")
+
+
+ggplot(data=as.data.frame(colData(sceset))[sceset$cluster %in% c(2,3,4),],aes(x=CD150,y=CD135,col=cluster))+
+  theme_minimal()+
+  geom_point()+
+  xlim(3.5, 10)+
+  ylim(5, 13)+
+  scale_color_manual(values=darkcols[c(2,3,4)])+
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  ggtitle("stem+MEP+myeloid")
+
+ggplot(data=as.data.frame(colData(sceset)[sceset$cluster %in% c(1,2,3,4),]),aes(x=CD150,y=CD135,col=cluster))+
+  theme_minimal()+
+  geom_point()+
+  xlim(3.5, 10)+
+  ylim(5, 13)+
+  scale_color_manual(values=darkcols)+
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  ggtitle("stem+MEP+myeloid+lymphoid")
+dev.off()
+```
+
+
+```{r}
+pdf("FACS_plot_per_clusters.pdf")
+cluster = as.factor(pData(sceset)$sc3_7_clusters == 1)
+ggplot(data=pData(sceset),aes(x=CD135,y=CD150,col=cluster))+geom_point()+ggtitle("cluster 1")
+ggplot(data=pData(sceset),aes(x=Sca1,y=CD127,col=cluster))+geom_point()+ggtitle("cluster 1")
+ggplot(data=pData(sceset),aes(x=Sca1,y=CD16.32,col=cluster))+geom_point()+ggtitle("cluster 1")
+
+cluster = as.factor(pData(sceset)$sc3_7_clusters == 2)
+ggplot(data=pData(sceset),aes(x=CD135,y=CD150,col=cluster))+geom_point()+ggtitle("cluster 2")
+ggplot(data=pData(sceset),aes(x=Sca1,y=CD127,col=cluster))+geom_point()+ggtitle("cluster 2")
+ggplot(data=pData(sceset),aes(x=Sca1,y=CD16.32,col=cluster))+geom_point()+ggtitle("cluster 2")
+
+cluster = as.factor(pData(sceset)$sc3_7_clusters == 3)
+ggplot(data=pData(sceset),aes(x=CD135,y=CD150,col=cluster))+geom_point()+ggtitle("cluster 3")
+ggplot(data=pData(sceset),aes(x=Sca1,y=CD127,col=cluster))+geom_point()+ggtitle("cluster 3")
+ggplot(data=pData(sceset),aes(x=Sca1,y=CD16.32,col=cluster))+geom_point()+ggtitle("cluster 3")
+
+cluster = as.factor(pData(sceset)$sc3_7_clusters == 4)
+ggplot(data=pData(sceset),aes(x=CD135,y=CD150,col=cluster))+geom_point()+ggtitle("cluster 4")
+ggplot(data=pData(sceset),aes(x=Sca1,y=CD127,col=cluster))+geom_point()+ggtitle("cluster 4")
+ggplot(data=pData(sceset),aes(x=Sca1,y=CD16.32,col=cluster))+geom_point()+ggtitle("cluster 4")
+
+cluster = as.factor(pData(sceset)$sc3_7_clusters == 5)
+ggplot(data=pData(sceset),aes(x=CD135,y=CD150,col=cluster))+geom_point()+ggtitle("cluster 5")
+ggplot(data=pData(sceset),aes(x=Sca1,y=CD127,col=cluster))+geom_point()+ggtitle("cluster 5")
+ggplot(data=pData(sceset),aes(x=Sca1,y=CD16.32,col=cluster))+geom_point()+ggtitle("cluster 5")
+
+cluster = as.factor(pData(sceset)$sc3_7_clusters == 6)
+ggplot(data=pData(sceset),aes(x=CD135,y=CD150,col=cluster))+geom_point()+ggtitle("cluster 6")
+ggplot(data=pData(sceset),aes(x=Sca1,y=CD127,col=cluster))+geom_point()+ggtitle("cluster 6")
+ggplot(data=pData(sceset),aes(x=Sca1,y=CD16.32,col=cluster))+geom_point()+ggtitle("cluster 6")
+
+cluster = as.factor(pData(sceset)$sc3_7_clusters == 7)
+ggplot(data=pData(sceset),aes(x=CD135,y=CD150,col=cluster))+geom_point()+ggtitle("cluster 7")
+ggplot(data=pData(sceset),aes(x=Sca1,y=CD127,col=cluster))+geom_point()+ggtitle("cluster 7")
+ggplot(data=pData(sceset),aes(x=Sca1,y=CD16.32,col=cluster))+geom_point()+ggtitle("cluster 7")
+dev.off()
+```
+
+
+```{r}
+
+y = DGEList(counts=expr_data)
+y = estimateCommonDisp(y)
+
+design <- model.matrix(~cell_state)
+fit = glmFit(y,design=design)
+
+lrt = glmLRT(fit,coef = 2)
+cc_genes = rownames(topTags(lrt,n=Inf,p.value=0.05))
+lrt = glmLRT(fit,coef = 3)
+cc_genes = c(cc_genes, rownames(topTags(lrt,n=Inf,p.value=0.05)))
+```
+
+
+```{r}
+sce_hi = sceall[rownames(hvg.out),]
+#sce_hi = sce_hi[!(rownames(sce_hi) %in% cc_genes),]
+```
+
+```{r}
+sce_hi <- sc3(sce_hi, ks = 4:10, biology = TRUE)
+sce_hi <- sc3_estimate_k(sce_hi)
+pData(sce_hi)$G1 = assignments$scores$G1
+pData(sce_hi)$G2M = assignments$scores$G2M
+```
+
+```{r}
+sc3_plot_markers(sce_hi, k =  7,show_pdata = c(
+        "G1",
+        "G2M"
+    ), p.val=0.01,auroc=0.75)
+```
+
+## revisit t-SNE plots
+
+```{r}
+set.seed(42)
+sc3_cor = sceset@sc3$consensus$`8`$consensus
+sc3_cor = sc3_cor+matrix(0.00001*rnorm(nrow(sc3_cor)*ncol(sc3_cor)),nrow=nrow(sc3_cor),ncol=ncol(sc3_cor))
+tsne_sc3 = Rtsne(1-sc3_cor,perplexity = 20,pca=FALSE,is_distance=TRUE)
+plot(tsne_sc3$Y, col=as.factor(pData(sceset)$sc3_7_clusters))
+```
+
+```{r}
+tsne_sc31 = Rtsne(sc3_cor,perplexity = 20,pca=FALSE)
+plot(tsne_sc31$Y, col=as.factor(pData(sceset)$sc3_7_clusters))
+```
+
+
+```{r}
+rtsne_ph = Rtsne(pData(sceset)[,c("CD16.32","CD135","CD127","CD150","Sca1","cKit")],perplexity = 20,pca=FALSE,dim=1)
+
+tsne_sc3dim1 = Rtsne(1-sc3_cor,perplexity = 20,pca=FALSE,is_distance=TRUE,dims = 1)
+
+ggplotly(ggplot(data=NULL,aes(x=tsne_sc3dim1$Y[,1],y=rtsne_ph$Y[,1],col=as.factor(pData(sceset)$sc3_8_clusters)))+geom_point())
+```
+
+```{r}
+ggplotly(ggplot(data=NULL,aes(x=tsne_sc3$Y[,1],y=tsne_sc3$Y[,2],col=rtsne_ph$Y[,1]))+geom_point())
+```
+
+```{r}
+ggplotly(ggplot(data=NULL,aes(x=tsne_sc3$Y[,1],y=tsne_sc3$Y[,2],col=exprs(sceset)["Dach1",]))+geom_point())
+```
+
+
+```{r}
+ggplotly(ggplot(data=NULL,aes(x=tsne_sc3$Y[,1],y=tsne_sc3$Y[,2],col=as.factor(pData(sceset)$sc3_8_clusters)))+geom_point())
+```
+
+
+```{r}
+#plot_ly(x=tsne_sc3$Y[,1],y=tsne_sc3$Y[,2],z=rtsne_ph$Y[,1],color=as.factor(pData(sceset)$sc3_8_clusters))
+```
+
+
+
+```{r}
+plot_ly(x=tsne_sc3$Y[,1],y=rtsne_ph$Y[,1],color=as.factor(pData(sceset)$sc3_8_clusters))
+```
+
+```{r}
+plot_ly(x=tsne_sc3$Y[,2],y=rtsne_ph$Y[,1],color=as.factor(pData(sceset)$sc3_8_clusters))
+
+```
+

@@ -1,0 +1,436 @@
+---
+title: "NN13NN16"
+author: "Luyi Tian"
+date: "3 September 2016"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE) # set `echo=FALSE` to disable the codes
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+load required functions and packages:
+```{r}
+source("sc_func.R")
+suppressMessages(library(Rtsne))
+suppressMessages(library(destiny))
+suppressMessages(library(ggplot2))
+suppressMessages(library(gplots))
+suppressMessages(library(RColorBrewer))
+hmcol<-colorRampPalette(c("blue", "white","red"))(n = 299)
+```
+
+load the data
+
+```{r}
+load("sc_192.RData")
+head(ph_data)
+expr_data[1:5,1:5]
+dim(expr_data)
+```
+
+
+
+```{r,warning=FALSE,echo=FALSE,message=FALSE}
+pca_out = prcomp(t(log2(expr_data+1)))
+pca_GO_list = PCA_GO_enrichment(pca_out)
+```
+
+
+```{r}
+plot(pca_out,n=20)
+batch = rep(0,nrow(pca_out$x))
+batch[grep("AGCGTCAT_",rownames(pca_out$x))] = 1
+batch = as.factor(batch)
+plot(pca_out$x[,1],pca_out$x[,2], col=batch)
+plot(pca_out$x[,1],pca_out$x[,3], col=batch)
+plot(pca_out$x[,1],pca_out$x[,4], col=batch)
+plot(pca_out$x[,1],pca_out$x[,5], col=batch)
+plot(pca_out$x[,3],pca_out$x[,4], col=batch)
+for (i in 1:10)
+{
+  print(paste("PCA@@@dimesion:",i))
+  print(head(pca_GO_list[[i]]))
+}
+```
+
+
+```{r}
+# use first 14 dimensions without 4 (batch effect), 1 and 6 (cell cycle)
+dif <- DiffusionMap( pca_out$x[,c(2,3,5,7,8,9,10,11,12,13,14)],n.eigs = 10)
+#plot(dif)
+plot(dif@eigenvectors[,1],dif@eigenvectors[,2])
+plot(dif@eigenvectors[,1],dif@eigenvectors[,3])
+plot(dif@eigenvectors[,1],dif@eigenvectors[,4])
+plot(dif@eigenvectors[,2],dif@eigenvectors[,3])
+```
+
+
+```{r,warning=FALSE,echo=FALSE,message=FALSE}
+dif_GO_list = Diff_GO_enrichment(dif,expr_data,p.val=0.001)
+```
+
+```{r}
+for (i in 1:10)
+{
+  print(paste("diffusion map @@@dimension:",i))
+  print(dif_GO_list$GO_enrich[[i]])
+}
+```
+
+```{r}
+tsne_diffmap = Rtsne(dif@eigenvectors[,],pca = FALSE,perplexity = 10)
+tsne_diffmap1 = Rtsne(dif@eigenvectors[,],dim=1,pca = FALSE,perplexity = 10)
+
+tsne_ph = Rtsne(log10(ph_data),pca = FALSE,perplexity = 10)
+tsne_ph1 = Rtsne(log10(ph_data),dim=1,pca = FALSE,perplexity = 10)
+
+plot(tsne_diffmap$Y[,1], tsne_diffmap$Y[,2])
+plot(tsne_ph$Y[,1], tsne_ph$Y[,2])
+plot(tsne_diffmap1$Y, tsne_ph1$Y)
+tsne_df = data.frame(transcriptome_dim1 = tsne_diffmap$Y[,1], 
+                     transcriptome_dim2 = tsne_diffmap$Y[,2],
+                     phenotype_dim1 = tsne_ph$Y[,1], 
+                     phenotype_dim2 = tsne_ph$Y[,2],
+                     transcriptome_1d = tsne_diffmap1$Y[,1], 
+                     phenotype_1d = tsne_ph1$Y[,1])
+
+
+combined_df = cbind(tsne_df,log10(ph_data),t(log2(expr_data+1)))
+ggplot(combined_df,aes(x=transcriptome_1d,y=phenotype_1d,col=Rsad2))+geom_point()
+write.csv(combined_df,file="shalin_192_pca_diff_new.csv", quote = FALSE)
+```
+
+
+
+```{r}
+diff_genes = c()
+for(i in 1:10){diff_genes = c(diff_genes,rownames(dif_GO_list$DE_genes[[i]]))}
+DE_expr = expr_data[rownames(expr_data) %in% diff_genes,]
+DE_clean = DE_expr[apply(log2(DE_expr+1),1,mean)<6,]
+DE_clean = DE_clean[rowMeans(DE_clean)>0.6,]
+dim(DE_expr)
+
+
+hr <- hclust(dist(cor(log2(DE_clean+1))))
+
+# define some clusters
+mycl <- cutree(hr, k=10)
+table(mycl)
+#mycl[mycl>8] = 8 # exclude rare cluster
+# get a color palette equal to the number of clusters
+#clusterCols <- rainbow(length(unique(mycl)))
+clusterCols = brewer.pal(10, "Set3")
+# create vector of colors for side bar
+myClusterSideBar <- clusterCols[mycl]
+ph_data$cluster = myClusterSideBar
+pdf("info_genes_s.pdf",width=20,height=25)
+DE_hm = heatmap.2(log2(DE_clean[,order(mycl)]+1),
+          Colv=FALSE,
+          trace="none",
+          dendrogram = "none",
+          col=hmcol,
+          density.info = "none",
+          labCol = "",
+          labRow = "",
+          ColSideColors = myClusterSideBar[order(mycl)],
+          key = FALSE
+          )
+dev.off()
+tsne_diffmap_DE = Rtsne(cor(log2(DE_clean+1)))
+tsne_diffmap_DE1 = Rtsne(cor(log2(DE_clean+1)),dim=1)
+plot(tsne_diffmap_DE$Y[,1], tsne_diffmap_DE$Y[,2])
+
+plot(tsne_diffmap_DE1$Y, tsne_ph1$Y)
+```
+
+```{r}
+database = "haemopedia"
+immgen_samples <- read.delim(paste0("/Users/tian.l/Dropbox/research/Dach1_paper/ref_data/",database,"_samples.txt"), stringsAsFactors=FALSE)
+immgen_probes <- read.delim(paste0("/Users/tian.l/Dropbox/research/Dach1_paper/ref_data/",database,"_probes.txt"), header=FALSE, stringsAsFactors=FALSE)
+immgen_expression <- read.delim(paste0("/Users/tian.l/Dropbox/research/Dach1_paper/ref_data/",database,"_expression.txt"), stringsAsFactors=FALSE)
+```
+
+```{r}
+library('biomaRt')
+mart <- useDataset("mmusculus_gene_ensembl", useMart("ensembl"))
+G_list <- getBM(filters= "ensembl_gene_id", attributes= c("ensembl_gene_id", "external_gene_name", "description"),values=immgen_probes$V2 ,mart=mart)
+immgen_probes = immgen_probes[immgen_probes$V2 %in% G_list$ensembl_gene_id,]
+G_list = G_list[match(immgen_probes$V2, G_list$ensembl_gene_id),]
+immgen_probes$external_gene_name = G_list$external_gene_name
+```
+
+```{r}
+immgen_expression = immgen_expression[immgen_expression$X %in% immgen_probes$V1,]
+immgen_probes = immgen_probes[immgen_probes$V1 %in% immgen_expression$X,]
+immgen_probes = immgen_probes[match(immgen_expression$X, immgen_probes$V1),]
+immgen_expression$gene_id = immgen_probes$external_gene_name
+#immgen_expression = immgen_expression[!duplicated(immgen_expression$gene_id),]
+immgen_expression = immgen_expression[,!(colnames(immgen_expression) %in% c("X","gene_id"))]
+immgen_expression = as.matrix(immgen_expression)
+rownames(immgen_expression) = immgen_probes$external_gene_name
+dim(immgen_expression)
+```
+
+
+```{r}
+table(immgen_samples$cell_lineage)
+immgen_samples$sampleId = gsub("-",".",immgen_samples$sampleId)
+#SC_list = immgen_samples[immgen_samples$cell_lineage == "Stem Cells", "sampleId"]
+SC_list = immgen_samples$sampleId
+sub_immgen_expression = immgen_expression[rownames(immgen_expression) %in% rownames(DE_expr), colnames(immgen_expression) %in% SC_list]
+sub_immgen_expression = sub_immgen_expression[!duplicated(rownames(sub_immgen_expression)),]
+sub_DE_expr = DE_expr[rownames(DE_expr) %in% rownames(sub_immgen_expression),]
+sub_DE_expr = sub_DE_expr[!duplicated(rownames(sub_DE_expr)),]
+sub_DE_expr = sub_DE_expr[order(rownames(sub_DE_expr)),]
+sub_immgen_expression = sub_immgen_expression[order(rownames(sub_immgen_expression)),]
+```
+
+```{r,warning=FALSE}
+p.val_mat = c()
+for (i in 1:ncol(sub_immgen_expression))
+{
+  p.val_vec = apply(sub_DE_expr, 2, function(x){
+  cor.test(x,sub_immgen_expression[,i],
+         method = "spearman",
+         alternative = "greater")$p.value})
+  p.val_mat = rbind(p.val_mat,-log10(p.val_vec))
+}
+rownames(p.val_mat) = colnames(sub_immgen_expression)
+
+pdf("haemopedia_hm_s.pdf",width=20,height=25)
+heatmap.2(p.val_mat[,order(mycl)],trace="none",
+          dendrogram="none",
+          Colv=FALSE,
+          col=hmcol,
+          scale="column",
+          labRow = "",
+          #ColSideColors = myClusterSideBar[order(mycl)],
+          labCol = "",
+          density.info="none",
+          key=FALSE)
+dev.off()
+
+tsne_immgen = Rtsne(cor(p.val_mat))
+plot(tsne_immgen$Y[,1], tsne_immgen$Y[,2])
+```
+
+```{r}
+index_sort_info_all <- read.csv("~/Downloads/index_sort_info_all.csv", stringsAsFactors=FALSE)
+index_sort_info_all$sample_id = paste(index_sort_info_all$Read1Index,index_sort_info_all$Read2Index,sep="_")
+index_sort_info_all = index_sort_info_all[,c("CD16.32","CD11b","CD135","CD127","CD150","Sca.1","cKit")]
+index_sort_info_all[index_sort_info_all<10] = 10
+
+p1 = ggplot()+
+  stat_density2d(data=index_sort_info_all,aes(x=CD135,y=CD150),color="black")+
+  scale_x_continuous(limits = c(10, 1e+4),trans="log10")+
+  scale_y_continuous(limits = c(10, 1e+4),trans="log10")+
+  theme(text = element_text(size = 17))+
+  theme_bw()
+p2 = ggplot()+
+  stat_density2d(data=index_sort_info_all,aes(x=Sca.1,y=CD127),color="black")+
+  scale_x_continuous(limits = c(50, 5e+4),trans="log10")+
+  scale_y_continuous(limits = c(50, 5e+4),trans="log10")+
+  theme(text = element_text(size = 17))+
+  theme_bw()
+p3 = ggplot()+
+  stat_density2d(data=index_sort_info_all,aes(x=Sca.1,y=CD16.32),color="black")+
+  scale_x_continuous(limits = c(50, 5e+4),trans="log10")+
+  scale_y_continuous(limits = c(50, 5e+4),trans="log10")+
+  theme(text = element_text(size = 17))+
+  theme_bw()
+
+
+
+
+
+M_p1 = p1
+for (i in c(1,2,3,6,8))
+{
+  M_p1 = M_p1+geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],size=3,color= clusterCols[i],aes(x=CD135,y=CD150))+
+  geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],pch=48+i,size=3,alpha=0.8,color="black" ,aes(x=CD135,y=CD150))
+}
+
+
+
+
+M_p2 = p2
+for (i in c(1,2,3,6,8))
+{
+  M_p2 = M_p2+geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],size=3,color= clusterCols[i],aes(x=Sca.1,y=CD127))+
+  geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],pch=48+i,size=3,alpha=0.8,color="black" ,aes(x=Sca.1,y=CD127))
+}
+
+
+
+
+M_p3 = p3
+for (i in c(1,2,3,6,8))
+{
+  M_p3 = M_p3+geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],size=3,color= clusterCols[i],aes(x=Sca.1,y=CD16.32))+
+  geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],pch=48+i,size=3,alpha=0.8,color="black" ,aes(x=Sca.1,y=CD16.32))
+}
+
+
+MPP_p1 = p1
+for (i in c(4,7))
+{
+  MPP_p1 = MPP_p1+geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],size=3,color= clusterCols[i],aes(x=CD135,y=CD150))+
+  geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],pch=48+i,size=3,alpha=0.8,color="black" ,aes(x=CD135,y=CD150))
+}
+
+
+
+MPP_p2 = p2
+for (i in c(4,7))
+{
+  MPP_p2 = MPP_p2+geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],size=3,color= clusterCols[i],aes(x=Sca.1,y=CD127))+
+  geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],pch=48+i,size=3,alpha=0.8,color="black" ,aes(x=Sca.1,y=CD127))
+}
+
+
+
+
+MPP_p3 = p3
+for (i in c(4,7))
+{
+  MPP_p3 = MPP_p3+geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],size=3,color= clusterCols[i],aes(x=Sca.1,y=CD16.32))+
+  geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],pch=48+i,size=3,alpha=0.8,color="black" ,aes(x=Sca.1,y=CD16.32))
+}
+
+
+L_p1 = p1
+for (i in c(5,9))
+{
+  L_p1 = L_p1+geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],size=3,color= clusterCols[i],aes(x=CD135,y=CD150))+
+  geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],pch=48+i,size=3,alpha=0.8,color="black" ,aes(x=CD135,y=CD150))
+}
+
+
+L_p2 = p2
+for (i in c(5,9))
+{
+  L_p2 = L_p2+geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],size=3,color= clusterCols[i],aes(x=Sca.1,y=CD127))+
+  geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],pch=48+i,size=3,alpha=0.8,color="black" ,aes(x=Sca.1,y=CD127))
+}
+
+L_p3 = p3
+for (i in c(5,9))
+{
+  L_p3 = L_p3+geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],size=3,color= clusterCols[i],aes(x=Sca.1,y=CD16.32))+
+  geom_point(data=ph_data[ph_data$cluster == clusterCols[i],],pch=48+i,size=3,alpha=0.8,color="black" ,aes(x=Sca.1,y=CD16.32))
+}
+
+
+
+pdf("FAC_all.pdf",width=20,height=20)
+multiplot(M_p1,M_p2,M_p3,MPP_p1,MPP_p2,MPP_p3,L_p1,L_p2,L_p3,cols = 3)
+dev.off()
+```
+
+
+
+```{r}
+g_e = as.data.frame(t(log2(expr_data+1)))
+ggplot(data=g_e,aes(x=Dach1, y=Gata2))+geom_point()
+ggplot(data=g_e,aes(x=Dach1, y=Il12a))+geom_point()
+```
+
+
+
+plot distribution of Dach1 among public dataset
+```{r}
+immgen_expression = immgen_expression[!duplicated(rownames(immgen_expression)),]
+immgen_expression_t = as.data.frame(t(immgen_expression))
+immgen_expression_t$sampleId = rownames(immgen_expression_t)
+immgen_samples_expr = merge(immgen_samples, immgen_expression_t, by.x="sampleId",by.y="sampleId")
+
+
+ggplot(data=immgen_samples_expr, aes(as.factor(cell_lineage), Dach1,fill=as.factor(cell_lineage)))+
+  geom_violin() + geom_jitter(height = 0, width = 0.1)+
+  #geom_quasirandom(alpha=0.8)+
+  theme_bw()+
+  theme(text = element_text(size=18),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data=immgen_samples_expr[immgen_samples_expr$cell_lineage %in% c("Restricted Potential Progenitor","Multi Potential Progenitor"),], aes(as.factor(celltype), Dach1, fill=as.factor(celltype)))+
+  geom_violin() + geom_jitter(height = 0, width = 0.1)+
+  theme_bw()+
+  theme(text = element_text(size=18),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+ggplot(data=immgen_samples_expr, aes(Gata2, Dach1, col=as.factor(cell_lineage)))+
+  geom_point(alpha=0.8)+
+  theme_bw()+
+  theme(text = element_text(size=18))
+
+
+
+ggplot(data=immgen_samples_expr[immgen_samples_expr$cell_lineage %in% c("Restricted Potential Progenitor","Multi Potential Progenitor"),], aes(Gata2, Dach1, col=as.factor(celltype)))+
+  geom_point(alpha=0.8)+
+  theme_bw()+
+  theme(text = element_text(size=18))
+
+```
+
+```{r}
+
+database = "immgen"
+immgen_samples <- read.delim(paste0("/Users/tian.l/Dropbox/research/Dach1_paper/ref_data/",database,"_samples.txt"), stringsAsFactors=FALSE)
+immgen_probes <- read.delim(paste0("/Users/tian.l/Dropbox/research/Dach1_paper/ref_data/",database,"_probes.txt"), header=FALSE, stringsAsFactors=FALSE)
+immgen_expression <- read.delim(paste0("/Users/tian.l/Dropbox/research/Dach1_paper/ref_data/",database,"_expression.txt"), stringsAsFactors=FALSE)
+
+library('biomaRt')
+mart <- useDataset("mmusculus_gene_ensembl", useMart("ensembl"))
+G_list <- getBM(filters= "ensembl_gene_id", attributes= c("ensembl_gene_id", "external_gene_name", "description"),values=immgen_probes$V2 ,mart=mart)
+immgen_probes = immgen_probes[immgen_probes$V2 %in% G_list$ensembl_gene_id,]
+G_list = G_list[match(immgen_probes$V2, G_list$ensembl_gene_id),]
+immgen_probes$external_gene_name = G_list$external_gene_name
+
+
+immgen_expression = immgen_expression[immgen_expression$probeId %in% immgen_probes$V1,]
+immgen_probes = immgen_probes[immgen_probes$V1 %in% immgen_expression$probeId,]
+immgen_probes = immgen_probes[match(immgen_expression$probeId, immgen_probes$V1),]
+immgen_expression$gene_id = immgen_probes$external_gene_name
+immgen_expression = immgen_expression[!duplicated(immgen_expression$gene_id),]
+g_id = immgen_expression$gene_id
+immgen_expression = immgen_expression[,!(colnames(immgen_expression) %in% c("probeId","gene_id"))]
+immgen_expression = as.matrix(immgen_expression)
+rownames(immgen_expression) = g_id
+dim(immgen_expression)
+
+
+
+immgen_expression_t = as.data.frame(t(immgen_expression))
+immgen_expression_t$sampleId = rownames(immgen_expression_t)
+immgen_samples_expr = merge(immgen_samples, immgen_expression_t, by.x="sampleId",by.y="sampleId")
+
+
+ggplot(data=immgen_samples_expr, aes(as.factor(cell_lineage), Dach1,fill=as.factor(cell_lineage)))+
+  geom_violin() + geom_jitter(height = 0, width = 0.1)+
+  #geom_quasirandom(alpha=0.8)+
+  theme_bw()+
+  theme(text = element_text(size=18),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(data=immgen_samples_expr[immgen_samples_expr$cell_lineage %in% c("Stem Cells"),], aes(as.factor(celltype), Dach1, fill=as.factor(celltype)))+
+  geom_bar(stat="identity")+
+  #geom_violin() + geom_jitter(height = 0, width = 0.1)+
+  theme_bw()+
+  theme(text = element_text(size=18),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+ggplot(data=immgen_samples_expr, aes(Gata2, Dach1, col=as.factor(cell_lineage)))+
+  geom_point(alpha=0.8)+
+  theme_bw()+
+  theme(text = element_text(size=18))
+
+
+
+ggplot(data=immgen_samples_expr[immgen_samples_expr$cell_lineage %in% c("Stem Cells"),], aes(Gata2, Dach1, col=as.factor(celltype)))+
+  geom_point(alpha=0.8)+
+  theme_bw()+
+  theme(text = element_text(size=18))
+```

@@ -1,0 +1,679 @@
+---
+title: "Dach1 plot"
+output: html_notebook
+---
+
+```{r}
+library(pheatmap)
+library(ggplot2)
+library(Seurat)
+library(cowplot)
+library(dplyr)
+library(edgeR)
+library(readr)
+library(ggrepel)
+library(RColorBrewer)
+library(tidyr)
+library(SDMTools)
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+col9 = getPalette(9)
+ttt = col9[5]
+col9[5] = col9[1]
+col9[1] = ttt
+getPalette1 = colorRampPalette(brewer.pal(8, "Set1"))
+```
+
+```{r,message=FALSE,warning=FALSE}
+load("~/Dropbox/research/Dach1_paper/NN126/NN126_Seurat_cc_removel.RData")
+```
+
+```{r}
+mouse_surface_protein <- read_csv("~/Dropbox/research/sis_seq/mouse_surface_protein.csv")
+```
+
+```{r}
+surface_pro_name = mouse_surface_protein$`ENTREZ gene symbol`
+surface_pro_name = surface_pro_name[surface_pro_name %in% rownames(srt_filter_cc)]
+length(surface_pro_name)
+```
+
+```{r}
+srt_filter_cc.surface = srt_filter_cc.markers
+srt_filter_cc.surface$SM = srt_filter_cc.surface$gene %in% surface_pro_name
+table(srt_filter_cc.surface$SM)
+```
+
+```{r}
+write.table(srt_filter_cc.surface,file="marker_gene_per_cluster_with_surface_annotation.csv",sep=",")
+```
+
+
+
+
+```{r}
+mk_genes = unique(srt_filter_cc.markers[srt_filter_cc.markers$p_val_adj<0.05,]$gene)
+
+DE_expr = srt_filter_cc@assays$integrated@scale.data[mk_genes,]
+```
+
+```{r}
+srt_filter_cc.markers.sig = srt_filter_cc.markers[srt_filter_cc.markers$p_val_adj<0.05,]
+write.table(srt_filter_cc.markers.sig,file = "Seurat_significant_marker_genes.csv",row.names = FALSE,sep=",")
+```
+
+
+
+calculate correlations between single cell and bulk samples
+
+```{r}
+
+database = "immgen"
+immgen_samples <- read.delim(paste0("/Users/tian.l/Dropbox/research/Dach1_paper/ref_data/",database,"_samples.txt"), stringsAsFactors=FALSE)
+immgen_probes <- read.delim(paste0("/Users/tian.l/Dropbox/research/Dach1_paper/ref_data/",database,"_probes.txt"), header=FALSE, stringsAsFactors=FALSE)
+immgen_expression <- read.delim(paste0("/Users/tian.l/Dropbox/research/Dach1_paper/ref_data/",database,"_expression.txt"), stringsAsFactors=FALSE)
+
+library('biomaRt')
+mart <- useDataset("mmusculus_gene_ensembl", useMart("ensembl"))
+G_list <- getBM(filters= "ensembl_gene_id", attributes= c("ensembl_gene_id", "external_gene_name", "description"),values=immgen_probes$V2 ,mart=mart)
+immgen_probes = immgen_probes[immgen_probes$V2 %in% G_list$ensembl_gene_id,]
+G_list = G_list[match(immgen_probes$V2, G_list$ensembl_gene_id),]
+immgen_probes$external_gene_name = G_list$external_gene_name
+
+immgen_expression = immgen_expression[immgen_expression$probeId %in% immgen_probes$V1,]
+immgen_probes = immgen_probes[immgen_probes$V1 %in% immgen_expression$probeId,]
+immgen_probes = immgen_probes[match(immgen_expression$probeId, immgen_probes$V1),]
+immgen_expression$gene_id = immgen_probes$external_gene_name
+immgen_expression = immgen_expression[!duplicated(immgen_expression$gene_id),]
+g_i = immgen_expression$gene_id
+immgen_expression = immgen_expression[,!(colnames(immgen_expression) %in% c("probeId","gene_id"))]
+immgen_expression = as.matrix(immgen_expression)
+rownames(immgen_expression) = g_i
+
+table(immgen_samples$cell_lineage)
+immgen_samples$sampleId = gsub("-",".",immgen_samples$sampleId)
+#SC_list = immgen_samples[immgen_samples$cell_lineage == "Stem Cells", "sampleId"]
+#SC_list = immgen_samples$sampleId
+SC_list = c("SC_CDP_BM","SC_CMP_BM","SC_GMP_BM",
+            "SC_LT34F_BM","SC_LTSL_BM","SC_MDP_BM",
+            "SC_MEP_BM","SC_MPP34F_BM","SC_ST34F_BM",
+            "SC_STSL_BM","proB_CLP_BM","preT_ETP_Th")
+sub_immgen_expression = immgen_expression[rownames(immgen_expression) %in% rownames(DE_expr), colnames(immgen_expression) %in% SC_list]
+sub_immgen_expression = sub_immgen_expression[!duplicated(rownames(sub_immgen_expression)),]
+sub_DE_expr = DE_expr[rownames(DE_expr) %in% rownames(sub_immgen_expression),]
+sub_DE_expr = sub_DE_expr[!duplicated(rownames(sub_DE_expr)),]
+sub_DE_expr = sub_DE_expr[order(rownames(sub_DE_expr)),]
+sub_immgen_expression = sub_immgen_expression[order(rownames(sub_immgen_expression)),]
+
+
+p.val_mat = c()
+for (i in 1:ncol(sub_immgen_expression))
+{
+  p.val_vec = apply(sub_DE_expr, 2, function(x){
+  cor.test(x,sub_immgen_expression[,i],
+         method = "spearman",
+         alternative = "greater",exact=FALSE)$p.value})
+  p.val_mat = rbind(p.val_mat,-log10(p.val_vec))
+}
+rownames(p.val_mat) = colnames(sub_immgen_expression)
+
+# hm_immgen = heatmap.2(p.val_mat[,order(mycl)],trace="none",
+#           dendrogram="none",
+#           Colv=FALSE,
+#           col=hmcol,
+#           scale="column",
+#           labRow = "",
+#           #ColSideColors = myClusterSideBar[order(mycl)],
+#           labCol = "",
+#           density.info="none",
+#           key=FALSE)
+
+#p_ma = p.val_mat[,order(mycl)]
+#p_ma = p_ma[hm_immgen$rowInd,]
+
+p.val_mat_s = scale(p.val_mat)
+p.val_mat_s[p.val_mat_s>2] = 2
+p.val_mat_s[p.val_mat_s<(-2)] = -2
+
+pheatmap(p.val_mat_s,scale="none")
+```
+
+```{r,fig.width=8,fig.height=8}
+top10 <- srt_filter_cc.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_logFC)
+
+top_ge = c()
+for(i in 0:8){
+  tmp_mk_df = srt_filter_cc.markers[srt_filter_cc.markers$cluster==i,]
+  tmp_mk_df = tmp_mk_df[order(tmp_mk_df$avg_logFC,decreasing = TRUE),]
+  if (i==4){
+    tmp_mk_df = tmp_mk_df[1:10,]
+  }else{
+    tmp_mk_df = tmp_mk_df[1:3,]
+  }
+  top_ge = c(top_ge, tmp_mk_df$gene)
+}
+
+tmp_mat = srt_filter_cc@assays$integrated@scale.data[top_ge,]
+tmp_mat[tmp_mat>2.5] = 2.5
+tmp_mat[tmp_mat<(-2.5)] = -2.5
+
+anno_df = data.frame(clusters=srt_filter_cc$integrated_snn_res.1.2, 
+                     Dach1GFP=srt_filter_cc$Dach1GFP,
+                     CD150=srt_filter_cc$CD150,
+                     CD135=srt_filter_cc$CD135,
+                     cKit=srt_filter_cc$cKit,
+                     Sca1=srt_filter_cc$Sca1,
+                     #CD127=srt_filter_cc$CD127,
+                     CD11b=srt_filter_cc$CD11b,
+                     SC_GMP_BM=p.val_mat_s["SC_GMP_BM",],
+                     proB_CLP_BM=p.val_mat_s["proB_CLP_BM",],
+                     SC_CMP_BM=p.val_mat_s["SC_CMP_BM",],
+                     SC_CDP_BM=p.val_mat_s["SC_CDP_BM",],
+                     SC_STSL_BM=p.val_mat_s["SC_STSL_BM",],
+                     SC_LTSL_BM=p.val_mat_s["SC_LTSL_BM",],stringsAsFactors = FALSE)
+
+names(col9) = as.character(0:8)
+annotation_colors = list(
+  clusters=col9,
+  Dach1GFP=BlueAndRed(),
+  CD150=BlueAndRed(),
+  CD135=BlueAndRed(),
+  cKit=BlueAndRed()[floor(50*(min(srt_filter_cc$cKit)-0)/(max(srt_filter_cc$cKit)-0)):50],  # we sorted cKit positive populations
+  CD127=BlueAndRed(),
+  Sca1=BlueAndRed()[floor(50*(min(srt_filter_cc$Sca1)-0)/(max(srt_filter_cc$Sca1)-0)):50],  # we sorted Sca1 positive populations
+  CD11b=BlueAndRed(),
+  SC_GMP_BM=BlueAndRed(),
+  proB_CLP_BM=BlueAndRed(),
+  SC_CMP_BM=BlueAndRed(),
+  SC_CDP_BM=BlueAndRed(),
+  SC_STSL_BM=BlueAndRed(),
+  SC_LTSL_BM=BlueAndRed()
+)
+
+pheatmap(tmp_mat[,order(srt_filter_cc$integrated_snn_res.1.2)],
+         cluster_cols = FALSE, 
+         cluster_rows = FALSE,
+         annotation_col = anno_df,
+         annotation_colors=annotation_colors,
+         show_colnames = FALSE,
+         color=PurpleAndYellow(),
+         filename="figs/heatmap_with_Seurat_cluster_all_markers.pdf",width = 7,height = 8.5)
+```
+
+```{r}
+srt_filter_cc$FACS_CT = NA
+srt_filter_cc$FACS_CT[srt_filter_cc$CD150>2.6 & srt_filter_cc$CD135<3] = "LT + MPP2"
+srt_filter_cc$FACS_CT[srt_filter_cc$CD150<2.6 & srt_filter_cc$CD135<3] = "ST + MPP3"
+srt_filter_cc$FACS_CT[srt_filter_cc$CD150<2.6 & srt_filter_cc$CD135>3] = "LMPP"
+srt_filter_cc$FACS_CT = as.factor(srt_filter_cc$FACS_CT)
+plot(srt_filter_cc$CD135,srt_filter_cc$CD150,col=as.factor(srt_filter_cc$FACS_CT))
+```
+
+```{r}
+
+```
+
+
+```{r}
+cnt_mtx = as.matrix(srt_filter_cc@assays$RNA@counts)
+design_mat = model.matrix(~srt_filter_cc$Dach1GFP)
+
+cnt_mtx = DGEList(counts=cnt_mtx)
+cnt_mtx = estimateDisp(cnt_mtx, design=design_mat, robust=TRUE)
+
+fit = glmQLFit(cnt_mtx, design_mat)
+
+lrt = glmQLFTest(fit)
+
+top_tag = topTags(lrt,n=60)
+top_tab = top_tag$table
+top_tab = top_tab[rownames(top_tab) %in% rownames(srt_filter_cc), ]
+top_tab = top_tab[rownames(top_tab) %in% srt_filter_cc.markers$gene, ]
+top_tab = top_tab[order(top_tab$logFC),]
+```
+
+```{r,fig.width=8,fig.height=8}
+tmp_mat = srt_filter_cc@assays$integrated@scale.data[rownames(top_tab),]
+tmp_mat[tmp_mat>2.5] = 2.5
+tmp_mat[tmp_mat<(-2.5)] = -2.5
+
+anno_df = data.frame(clusters=srt_filter_cc$integrated_snn_res.1.2,
+                     Dach1GFP=srt_filter_cc$Dach1GFP,
+                     CD150=srt_filter_cc$CD150,
+                     CD135=srt_filter_cc$CD135,stringsAsFactors = FALSE)
+
+names(col9) = as.character(0:8)
+annotation_colors = list(
+  clusters=col9,
+  Dach1GFP=BlueAndRed(),
+  CD150=BlueAndRed(),
+  CD135=BlueAndRed()
+)
+
+pheatmap(tmp_mat[,order(anno_df$Dach1GFP)],
+         cluster_cols = FALSE, 
+         cluster_rows = FALSE,
+         annotation_col = anno_df,
+         annotation_colors=annotation_colors,
+         show_colnames = FALSE,
+         color=PurpleAndYellow(),
+         filename="figs/heatmap_with_facs_Dach1_DE.pdf",width = 7,height = 8.5)
+```
+
+
+```{r}
+library(slingshot)
+km_out = kmeans(srt_filter_cc@meta.data[,c("CD135","Dach1GFP")],centers=6,iter.max=500,nstart=100)
+plot(srt_filter_cc$CD135,srt_filter_cc$Dach1GFP,col=as.factor(km_out$cluster))
+
+slingshot_lin <- getLineages(srt_filter_cc@meta.data[,c("CD135","Dach1GFP")],clusterLabels = km_out$cluster)
+slingshot_crv <- getCurves(slingshot_lin)
+slingshot_pseudo <- slingPseudotime(slingshot_crv)
+
+pdf("figs/CD135vsDach1GFP_Seurat_clusters.pdf")
+print(plot(srt_filter_cc@meta.data[,c("CD135","Dach1GFP")], 
+           col =col9[srt_filter_cc$integrated_snn_res.1.2], 
+           asp = 1, pch = 16))
+print(lines(slingshot_crv, lwd = 3))
+dev.off()
+```
+
+```{r}
+pdf("figs/CD135vsDach1GFP_Seurat_cluster4.pdf")
+clu4_col = rep("grey80",length(srt_filter_cc$integrated_snn_res.1.2))
+clu4_col[srt_filter_cc$integrated_snn_res.1.2==4] = "black"
+clu4_col = adjustcolor( clu4_col, alpha.f = 0.7)
+print(plot(srt_filter_cc@meta.data[,c("CD135","Dach1GFP")], 
+           col =clu4_col, 
+           asp = 1, pch = 16))
+print(lines(slingshot_crv, lwd = 3))
+dev.off()
+```
+
+
+```{r}
+pdf("figs/CD135vsDach1GFP_FACS_gate.pdf")
+print(plot(srt_filter_cc@meta.data[,c("CD135","Dach1GFP")], 
+           col =getPalette1(5)[c(2,4,5)][srt_filter_cc$FACS_CT], 
+           asp = 1, pch = 16))
+print(lines(slingshot_crv, lwd = 3))
+dev.off()
+```
+
+
+```{r,fig.width=8,fig.height=8}
+top10 <- srt_filter_cc.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_logFC)
+top_ge = c()
+for(i in 0:8){
+  tmp_mk_df = srt_filter_cc.markers[srt_filter_cc.markers$cluster==i,]
+  tmp_mk_df = tmp_mk_df[order(tmp_mk_df$avg_logFC,decreasing = TRUE),]
+  if (i==4){
+    tmp_mk_df = tmp_mk_df[1:5,]
+  }else{
+    tmp_mk_df = tmp_mk_df[1:2,]
+  }
+  top_ge = c(top_ge, tmp_mk_df$gene)
+}
+
+tmp_mat = srt_filter_cc@assays$integrated@scale.data[unique(top_ge),]
+tmp_mat[tmp_mat>2.5] = 2.5
+tmp_mat[tmp_mat<(-2.5)] = -2.5
+
+anno_df = data.frame(clusters=srt_filter_cc$integrated_snn_res.1.2,
+                     FACS_gating=srt_filter_cc$FACS_CT,
+                     Dach1GFP=srt_filter_cc$Dach1GFP,
+                     CD150=srt_filter_cc$CD150,
+                     CD135=srt_filter_cc$CD135,
+                     proB_CLP_BM=p.val_mat_s["proB_CLP_BM",],
+                     SC_GMP_BM=p.val_mat_s["SC_GMP_BM",],
+                     stringsAsFactors = FALSE)
+
+tmp_co = getPalette1(5)[c(2,4,5)]
+names(tmp_co) = levels(srt_filter_cc$FACS_CT)
+names(col9) = as.character(0:8)
+annotation_colors = list(
+  clusters=col9,
+  Dach1GFP=BlueAndRed(),
+  CD150=BlueAndRed(),
+  CD135=BlueAndRed(),
+  SC_GMP_BM=BlueAndRed(),
+  proB_CLP_BM=BlueAndRed(),
+  SC_CMP_BM=BlueAndRed(),
+  SC_MEP_BM=BlueAndRed(),
+  SC_STSL_BM=BlueAndRed(),
+  SC_LTSL_BM=BlueAndRed(),
+  FACS_gating=tmp_co
+)
+
+pheatmap(tmp_mat[,order(slingshot_pseudo)],
+         cluster_cols = FALSE, 
+         cluster_rows = TRUE,
+         annotation_col = anno_df,
+         annotation_colors=annotation_colors,
+         show_colnames = FALSE,
+         color=PurpleAndYellow(),
+         filename="figs/heatmap_slingshot_S.pdf",width = 6.5,height = 5)
+pheatmap(tmp_mat[,order(slingshot_pseudo)],
+         cluster_cols = FALSE, 
+         cluster_rows = TRUE,
+         annotation_col = anno_df,
+         annotation_colors=annotation_colors,
+         show_colnames = FALSE,
+         color=PurpleAndYellow(),
+         filename="figs/heatmap_slingshot_L.pdf",width = 8,height = 12)
+```
+
+
+
+```{r,fig.width=8,fig.height=8}
+top10 <- srt_filter_cc.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+tmp_mat = srt_filter_cc@assays$integrated@scale.data[unique(top10$gene),]
+tmp_mat[tmp_mat>2.5] = 2.5
+tmp_mat[tmp_mat<(-2.5)] = -2.5
+
+anno_df = data.frame(clusters=srt_filter_cc$integrated_snn_res.1.2,
+                     Dach1GFP=srt_filter_cc$Dach1GFP,
+                     CD150=srt_filter_cc$CD150,
+                     CD135=srt_filter_cc$CD135,stringsAsFactors = FALSE)
+
+names(col9) = as.character(0:8)
+annotation_colors = list(
+  clusters=col9,
+  Dach1GFP=BlueAndRed(),
+  CD150=BlueAndRed(),
+  CD135=BlueAndRed()
+)
+
+pheatmap(tmp_mat[,order(anno_df$Dach1GFP)],
+         cluster_cols = FALSE, 
+         cluster_rows = TRUE,
+         annotation_col = anno_df,
+         annotation_colors=annotation_colors,
+         show_colnames = FALSE,
+         color=PurpleAndYellow(),
+         filename="figs/heatmap_with_facs_Dach1.pdf",width = 7,height = 8.5)
+```
+
+```{r}
+top10 <- srt_filter_cc.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+tmp_mat = srt_filter_cc@assays$integrated@scale.data[unique(top10$gene),]
+tmp_mat[tmp_mat>2.5] = 2.5
+tmp_mat[tmp_mat<(-2.5)] = -2.5
+
+anno_df = data.frame(clusters=srt_filter_cc$integrated_snn_res.1.2,
+                     Dach1GFP=srt_filter_cc$Dach1GFP,
+                     CD150=srt_filter_cc$CD150,
+                     CD135=srt_filter_cc$CD135,stringsAsFactors = FALSE)
+
+tmp_list = list()
+for (i in 0:8) {
+  tm_i = tmp_mat[,anno_df$clusters==i]
+  tmp_list[[i+1]] = rowMeans(tm_i)
+}
+tmp_bl = Reduce(cbind,tmp_list)
+
+anno_df$clusters = factor(anno_df$clusters, levels = (0:8)[order(cor(tmp_bl)[,5],decreasing = TRUE)])
+
+names(col9) = as.character(0:8)
+annotation_colors = list(
+  clusters=col9,
+  Dach1GFP=BlueAndRed(),
+  CD150=BlueAndRed(),
+  CD135=BlueAndRed()
+)
+
+pheatmap(tmp_mat[,order(anno_df$clusters)],
+         cluster_cols = FALSE, 
+         cluster_rows = FALSE,
+         annotation_col = anno_df,
+         annotation_colors=annotation_colors,
+         show_colnames = FALSE,
+         color=PurpleAndYellow(),
+         filename="figs/heatmap_with_facs_similarity_to_cluster4.pdf",width = 7,height = 8.5)
+```
+
+
+
+
+```{r}
+top.n = 25
+singleR_score = readRDS("~/Dropbox/research/Dach1_paper/NN126/singleR_score.Rds")
+srt_filter_cc = srt_filter_cc[,colnames(srt_filter_cc) %in% rownames(singleR_score)]
+singleR_score = singleR_score[rownames(singleR_score) %in% colnames(srt_filter_cc),]
+singleR_score = singleR_score[colnames(srt_filter_cc),]
+m = apply(t(scale(t(singleR_score))),2,max)
+thres = sort(m,decreasing=TRUE)[min(top.n+1,length(m))]
+
+mmax = rowMaxs(singleR_score)
+mmin = rowMins(singleR_score)
+singleR_score = (singleR_score-mmin)/(mmax-mmin)
+singleR_score = singleR_score^3
+singleR_score_raw = singleR_score
+
+colnames(singleR_score)[grepl("Stem cells",colnames(singleR_score))]
+singleR_score = singleR_score[,m>thres]
+#singleR_score = singleR_score[,grepl("Stem cells",colnames(singleR_score))]
+singleR_score_r = singleR_score[order(srt_filter_cc$integrated_snn_res.1.2),]
+colo = col9
+names(colo) = levels(srt_filter_cc$integrated_snn_res.1.2)
+pheatmap::pheatmap(singleR_score_r,annotation_row=srt_filter_cc@meta.data[,c("seurat_clusters","Dach1GFP","CD150","CD135")],show_rownames=FALSE,cluster_rows = FALSE, annotation_colors=
+                     list(seurat_clusters=colo,
+                          Dach1GFP=c("dodgerblue2","white", "firebrick2"),
+                          CD150=c("dodgerblue2","white", "firebrick2"), 
+                          CD135=c("dodgerblue2","white", "firebrick2")))
+```
+
+```{r}
+colnames(singleR_score_r)
+sel_ct = c("Stem cells (GMP)","Stem cells (SC.MDP)","B cells (proB.CLP)","T cells (T.ETP)","Stem cells (SC.LT34F)","Stem cells (SC.MPP34F)")
+```
+
+```{r}
+plt_df = singleR_score_r[,sel_ct]
+plt_df = as.data.frame(scale(plt_df))
+plt_df$clusters = srt_filter_cc$integrated_snn_res.1.2[order(srt_filter_cc$integrated_snn_res.1.2)]
+plt_df <- gather(plt_df, reference_ct, similarity, 1:5, factor_key=TRUE)
+head(plt_df)
+
+```
+
+```{r,fig.width=8,fig.height=8}
+ggplot(data=plt_df,aes(x=clusters,y=similarity,fill=clusters))+
+  geom_violin(alpha=0.8,show.legend = F)+
+  scale_fill_manual(values=col9)+
+  geom_jitter(show.legend = F,size=.1,alpha = 0.2, width = .2)+
+  theme_bw()+
+  labs(y="normalized similarity score")+
+  theme(text = element_text(size=10),panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  facet_grid(reference_ct ~ .,scales="free_y")
+ggsave(filename = "figs/singleR_violin_plot.pdf",width = 5.5,height = 6.5)
+```
+
+```{r,fig.height=7,fig.width=7}
+VlnPlot(object = srt_filter_cc, features= c("Dach1GFP","CD150","CD135","CD127","cKit"), cols=col9, ncol=2,pt.size=0.1)
+```
+
+```{r}
+facs_df = srt_filter_cc@meta.data[,c("seurat_clusters","Dach1GFP","CD150","cKit","CD135","Sca1")]
+facs_df$LPP = "no"
+facs_df$LPP[facs_df$Dach1GFP<2.7 & facs_df$CD135>3] = "yes"
+facs_df <- gather(facs_df, FACS_marker, Intensity, 2:6, factor_key=TRUE)
+head(facs_df)
+```
+
+
+```{r,fig.width=7,fig.height=7}
+ggplot(data=facs_df,aes(x=seurat_clusters,y=Intensity,fill=seurat_clusters))+
+  geom_violin(alpha=0.8,show.legend = F)+
+  scale_fill_manual(values=col9)+
+  geom_jitter(aes(size=LPP,col=LPP),alpha = 0.7, width = .2)+
+  scale_size_manual(values=c(no=0.01,yes=0.8))+
+  scale_color_manual(values=c(no="grey80",yes="black"))+
+  theme_bw()+
+  guides(fill = FALSE)+
+  labs(col="LPP",x="clusters")+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+  facet_grid(FACS_marker ~ .,scales="free_y")
+
+ggsave(filename = "figs/FACS_LPP_violin_plot.pdf",width = 6,height = 6)
+```
+
+
+```{r,fig.width=9,fig.height=9}
+plot(x, layout=l, vertex.label=NA,vertex.size=3,edge.color="grey80",edge.width=0.5,vertex.color=srt_filter_cc$integrated_snn_res.1.2,palette=col9)
+legend('topleft',legend=levels(srt_filter_cc$integrated_snn_res.1.2),col=col9,pch=16,title="clusters")
+```
+
+```{r}
+pdf("figs/graph_layout_seurat_clusters.pdf",width = 6,height = 6)
+plot(x, layout=l, vertex.label=NA,vertex.frame.color=NA,vertex.size=3,edge.color="grey80",edge.width=0.5,vertex.color=srt_filter_cc$integrated_snn_res.1.2,palette=col9)
+legend('topleft',legend=levels(srt_filter_cc$integrated_snn_res.1.2),col=col9,pch=16,title="clusters")
+dev.off()
+```
+
+```{r}
+#col_p = c("#E5BA52","#AB7CA3","#0030BF")
+pdf("figs/graph_layout_FACS_gating.pdf",width = 6,height = 6)
+plot(x, layout=l, vertex.label=NA,vertex.frame.color=NA,vertex.size=3,edge.color="grey90",edge.width=0.3,vertex.color=srt_filter_cc$FACS_CT,palette=getPalette1(5)[c(2,4,5)])
+legend('topleft',legend=levels(srt_filter_cc$FACS_CT),col=getPalette1(5)[c(2,4,5)],pch=16,title="FACS gating",cex = 1.2)
+dev.off()
+```
+
+```{r}
+pdf("figs/graph_layout_FACS.pdf",width = 6,height = 6)
+plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.frame.color="grey30",edge.color="grey90",edge.width=0.5,vertex.color=cut(srt_filter_cc$Dach1GFP,10),palette=BlueAndRed(10),main="Dach1" )
+legend.gradient(cbind(x =c(0.8,0.9,0.9,0.8), y =c(1.0,1.0,0.8,0.8)),
+                limits=c(round(min(srt_filter_cc$Dach1GFP), 2),round(max(srt_filter_cc$Dach1GFP),2)),
+                cols=BlueAndRed(10),pch=16, title="Dach1GFP")
+
+plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.frame.color="grey30",edge.color="grey90",edge.width=0.5,vertex.color=cut(srt_filter_cc$CD150,10),palette=BlueAndRed(10),main="CD150" )
+legend.gradient(cbind(x =c(0.8,0.9,0.9,0.8), y =c(1.0,1.0,0.8,0.8)),
+                limits=c(round(min(srt_filter_cc$CD150), 2),round(max(srt_filter_cc$CD150),2)),
+                cols=BlueAndRed(10),pch=16, title="CD150")
+
+plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.frame.color="grey30",edge.color="grey90",edge.width=0.5,vertex.color=cut(srt_filter_cc$CD135,10),palette=BlueAndRed(10),main="CD135" )
+legend.gradient(cbind(x =c(0.8,0.9,0.9,0.8), y =c(1.0,1.0,0.8,0.8)),
+                limits=c(round(min(srt_filter_cc$CD135), 2),round(max(srt_filter_cc$CD135),2)),
+                cols=BlueAndRed(10),pch=16, title="CD135")
+
+plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.frame.color="grey30",edge.color="grey90",edge.width=0.5,vertex.color=cut(srt_filter_cc$cKit,10),palette=BlueAndRed(10),main="cKit" )
+legend.gradient(cbind(x =c(0.8,0.9,0.9,0.8), y =c(1.0,1.0,0.8,0.8)),
+                limits=c(round(min(srt_filter_cc$cKit), 2),round(max(srt_filter_cc$cKit),2)),
+                cols=BlueAndRed(10),pch=16, title="cKit")
+
+plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.frame.color="grey30",edge.color="grey90",edge.width=0.5,vertex.color=cut(srt_filter_cc$Sca1,10),palette=BlueAndRed(10),main="Sca1" )
+legend.gradient(cbind(x =c(0.8,0.9,0.9,0.8), y =c(1.0,1.0,0.8,0.8)),
+                limits=c(round(min(srt_filter_cc$Sca1), 2),round(max(srt_filter_cc$Sca1),2)),
+                cols=BlueAndRed(10),pch=16,title="Sca1")
+dev.off()
+```
+
+```{r}
+pdf("figs/graph_layout_marker_genes.pdf",width = 6,height = 6)
+for (ge in rownames(tmp_mat)){
+  tmp_expr = tmp_mat[ge,]
+  plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.frame.color="grey30",edge.color="grey90",edge.width=0.5,vertex.color=cut(tmp_expr,8),palette=BlueAndRed(8),main=ge )
+  legend.gradient(cbind(x =c(0.8,0.9,0.9,0.8), y =c(1.0,1.0,0.8,0.8)),
+                limits=c(round(min(tmp_expr), 2),round(max(tmp_expr),2)),
+                cols=BlueAndRed(10),pch=16, title="scaled expression")
+}
+dev.off()
+
+```
+
+```{r}
+pdf("figs/graph_layout_CD135.pdf",width = 6,height = 6)
+  tmp_expr = srt_filter_cc$CD135
+  plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.frame.color=NA,edge.color="grey90",edge.width=0.5,vertex.color=cut(tmp_expr,8),palette=BlueAndRed(8))
+  legend.gradient(cbind(x =c(0.8,0.9,0.9,0.8), y =c(1.0,1.0,0.8,0.8)),
+                limits=c(round(min(tmp_expr), 2),round(max(tmp_expr),2)),
+                cols=BlueAndRed(10),pch=16,cex = 1.2)
+
+dev.off()
+pdf("figs/graph_layout_Dach1GFP.pdf",width = 6,height = 6)
+  tmp_expr = srt_filter_cc$Dach1GFP
+  plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.frame.color=NA,edge.color="grey90",edge.width=0.5,vertex.color=cut(tmp_expr,8),palette=BlueAndRed(8))
+  legend.gradient(cbind(x =c(0.8,0.9,0.9,0.8), y =c(1.0,1.0,0.8,0.8)),
+                limits=c(round(min(tmp_expr), 2),round(max(tmp_expr),2)),
+                cols=BlueAndRed(10),pch=16,cex = 1.2)
+dev.off()
+
+pdf("figs/graph_layout_Dntt.pdf",width = 6,height = 6)
+  tmp_expr = srt_filter_cc@assays$integrated@scale.data["Dntt",]
+  tmp_expr[tmp_expr>2.5] = 2.5
+  tmp_expr[tmp_expr<(-2.5)] = -2.5
+  plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.frame.color=NA,edge.color="grey90",edge.width=0.5,vertex.color=cut(tmp_expr,8),palette=BlueAndRed(8))
+  legend.gradient(cbind(x =c(0.8,0.9,0.9,0.8), y =c(1.0,1.0,0.8,0.8)),
+                limits=c(round(min(tmp_expr), 2),round(max(tmp_expr),2)),
+                cols=BlueAndRed(10),pch=16,cex = 1.2)
+dev.off()
+
+pdf("figs/graph_layout_Cmah.pdf",width = 6,height = 6)
+  tmp_expr = srt_filter_cc@assays$integrated@scale.data["Cmah",]
+  tmp_expr[tmp_expr>3] = 3
+  tmp_expr[tmp_expr<(-2.5)] = -2.5
+  plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.frame.color=NA,edge.color="grey90",edge.width=0.5,vertex.color=cut(tmp_expr,8),palette=BlueAndRed(8))
+  legend.gradient(cbind(x =c(0.8,0.9,0.9,0.8), y =c(1.0,1.0,0.8,0.8)),
+                limits=c(round(min(tmp_expr), 2),round(max(tmp_expr),2)),
+                cols=BlueAndRed(10),pch=16,cex = 1.2)
+dev.off()
+
+pdf("figs/graph_layout_CLPscore.pdf",width = 6,height = 6)
+  tmp_expr = p.val_mat_s["proB_CLP_BM",]
+  #tmp_expr[tmp_expr>3] = 3
+  #tmp_expr[tmp_expr<(-2.5)] = -2.5
+  plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.frame.color=NA,edge.color="grey90",edge.width=0.5,vertex.color=cut(tmp_expr,8),palette=BlueAndRed(8))
+  legend.gradient(cbind(x =c(0.8,0.9,0.9,0.8), y =c(1.0,1.0,0.8,0.8)),
+                limits=c(round(min(tmp_expr), 2),round(max(tmp_expr),2)),
+                cols=BlueAndRed(10),pch=16,cex = 1.2)
+dev.off()
+
+pdf("figs/graph_layout_CMPscore.pdf",width = 6,height = 6)
+  tmp_expr = p.val_mat_s["SC_CMP_BM",]
+  #tmp_expr[tmp_expr>3] = 3
+  #tmp_expr[tmp_expr<(-2.5)] = -2.5
+  plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.frame.color=NA,edge.color="grey90",edge.width=0.5,vertex.color=cut(tmp_expr,8),palette=BlueAndRed(8))
+  legend.gradient(cbind(x =c(0.8,0.9,0.9,0.8), y =c(1.0,1.0,0.8,0.8)),
+                limits=c(round(min(tmp_expr), 2),round(max(tmp_expr),2)),
+                cols=BlueAndRed(10),pch=16,cex = 1.2)
+dev.off()
+
+```
+
+
+```{r,fig.width=9,fig.height=9}
+gray_b_col = c(adjustcolor("grey70", alpha.f = 0.8),"black")
+plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.frame.color=NA,edge.color="grey80",edge.width=0.5,vertex.color=as.factor(facs_df$LPP),palette=gray_b_col)
+legend('topleft',legend=levels(as.factor(facs_df$LPP)),col=gray_b_col,pch=16,title="LPP")
+```
+
+```{r}
+pdf("figs/graph_layout_LPP.pdf",width = 6,height = 6)
+gray_b_col = c(adjustcolor("grey70", alpha.f = 0.5),"black")
+plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.frame.color=NA,edge.color="grey80",edge.width=0.5,vertex.color=as.factor(facs_df$LPP),palette=gray_b_col)
+legend('topleft',legend=levels(as.factor(facs_df$LPP)),col=gray_b_col,pch=16,title="LPP")
+dev.off()
+```
+
+```{r,fig.width=9,fig.height=9}
+gray_b_col = c(adjustcolor("grey70", alpha.f = 0.8),"black")
+plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.frame.color=NA,edge.color="grey80",edge.width=0.5,vertex.color=as.factor(srt_filter_cc$CD135pp),palette=gray_b_col)
+legend('topleft',legend=levels(as.factor(srt_filter_cc$CD135pp)),col=gray_b_col,pch=16,title="CD135 high")
+```
+
+```{r}
+pdf("figs/graph_layout_CD135hi.pdf",width = 6,height = 6)
+gray_b_col = c(adjustcolor("grey70", alpha.f = 0.8),"black")
+plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.frame.color=NA,edge.color="grey80",edge.width=0.5,vertex.color=as.factor(srt_filter_cc$CD135pp),palette=gray_b_col)
+legend('topleft',legend=levels(as.factor(srt_filter_cc$CD135pp)),col=gray_b_col,pch=16,title="CD135 high")
+dev.off()
+```
+
+```{r}
+pdf("figs/graph_layout_LMPP.pdf",width = 6,height = 6)
+gray_b_col = c(adjustcolor("grey70", alpha.f = 0.8),"black")
+plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.frame.color=NA,edge.color="grey80",edge.width=0.5,vertex.color=as.factor(srt_filter_cc$FACS_CT=="LMPP"),palette=gray_b_col)
+legend('topleft',legend=levels(as.factor(srt_filter_cc$FACS_CT=="LMPP")),col=gray_b_col,pch=16,title="LMPP")
+dev.off()
+```

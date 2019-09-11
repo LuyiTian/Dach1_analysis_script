@@ -1,0 +1,314 @@
+---
+title: "NN126 Seurat remove cell cycle"
+output: html_notebook
+---
+
+```{r}
+library(scPipe)
+library(scater)
+library(scran)
+library(ggplot2)
+library(Seurat)
+library(cowplot)
+library(sctransform)
+library(dplyr)
+library(readr)
+library(ggrepel)
+library(RColorBrewer)
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+col9 = getPalette(9)
+ttt = col9[5]
+col9[5] = col9[1]
+col9[1] = ttt
+```
+
+```{r}
+load("~/Dropbox/research/Dach1_paper/NN126/NN126_Seurat_analysis.RData")
+```
+
+```{r}
+s.genes <- tolower(cc.genes$s.genes)
+g2m.genes <- tolower(cc.genes$g2m.genes)
+simpleCap <- function(x) {
+  paste(toupper(substring(x, 1,1)), substring(x, 2),
+      sep="")
+}
+s.genes = simpleCap(s.genes)
+g2m.genes = simpleCap(g2m.genes)
+```
+
+```{r}
+srt_filter_cc = srt_combine_filter
+srt_filter_cc <- CellCycleScoring(srt_filter_cc, s.features = s.genes, g2m.features = g2m.genes, set.ident = FALSE)
+head(srt_filter_cc[[]])
+```
+
+```{r}
+RidgePlot(srt_filter_cc, features = c("Pcna", "Top2a", "Mcm6", "Mki67"), ncol = 2,cols=getPalette(7))
+```
+
+```{r}
+DimPlot(srt_filter_cc, reduction = "umap", group.by = "Phase")
+```
+
+
+```{r}
+srt_filter_cc <- ScaleData(srt_filter_cc, vars.to.regress = c("S.Score", "G2M.Score"), features = rownames(srt_filter_cc),verbose = FALSE)
+```
+
+```{r,warning=FALSE,message=FALSE,results='hide'}
+srt_filter_cc <- RunPCA(object = srt_filter_cc, verbose = FALSE)
+srt_filter_cc <- RunUMAP(object = srt_filter_cc, dims = 1:15, verbose = FALSE)
+srt_filter_cc <- FindNeighbors(object = srt_filter_cc, k.param=10, dims = 1:15, verbose = FALSE)
+srt_filter_cc <- FindClusters(object = srt_filter_cc, verbose = FALSE,resolution = 1.2)
+# Visualization
+p1 <- DimPlot(srt_filter_cc, reduction = "umap", group.by = "Phase")
+p2 <- DimPlot(srt_filter_cc, reduction = "umap", label = TRUE, cols=col9)
+```
+
+```{r,fig.width=10,fig.height=5}
+plot_grid(p1, p2)
+```
+
+
+```{r,fig.height=10,fig.width=17}
+srt_filter_cc.markers <- FindAllMarkers(srt_filter_cc, logfc.threshold = 0.1,only.pos = TRUE,verbose=FALSE)
+top10 <- srt_filter_cc.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+DoHeatmap(srt_filter_cc, features = top10$gene) # cannot change color of the color bar
+```
+
+
+```{r,fig.height=7,fig.width=7}
+VlnPlot(object = srt_filter_cc, features= c("Dach1GFP","CD150","CD135","CD127","cKit"), cols=col9, ncol=2,pt.size=0.1)
+```
+
+
+```{r,fig.height=8,fig.width=10}
+FeaturePlot(object = srt_filter_cc, cols =rev(rainbow(5))[2:5],features =c("Dach1GFP","CD11b","CD150","CD127","cKit","CD135","Sca1","PI"), pt.size =1)
+```
+
+```{r,fig.width=9.5,fig.height=8}
+p1=ggplot(data=NULL,aes(x=srt_filter_cc@meta.data$CD135,y=srt_filter_cc@meta.data$CD150,col=srt_filter_cc@active.ident))+
+  geom_point(alpha=0.7,size=1.5)+
+  labs(x="CD135",y="CD150",col="cluster")+
+  scale_color_manual(values=col9)+
+  theme_bw()
+p2=ggplot(data=NULL,aes(x=srt_filter_cc@meta.data$Dach1GFP,y=srt_filter_cc@meta.data$CD135,col=srt_filter_cc@active.ident))+
+  geom_point(alpha=0.7,size=1.5)+
+  scale_color_manual(values=col9)+
+  labs(x="Dach1GFP",y="CD135",col="cluster")+
+  theme_bw()
+
+p3=ggplot(data=NULL,aes(x=srt_filter_cc@meta.data$cKit,y=srt_filter_cc@meta.data$Sca1,col=srt_filter_cc@active.ident))+
+  geom_point(alpha=0.7,size=1.5)+
+  scale_color_manual(values=col9)+
+  labs(x="cKit",y="Sca1",col="cluster")+
+  theme_bw()
+
+p4=ggplot(data=NULL,aes(x=srt_filter_cc@meta.data$CD135,y=srt_filter_cc@meta.data$CD127,col=srt_filter_cc@active.ident))+
+  geom_point(alpha=0.7,size=1.5)+
+  scale_color_manual(values=col9)+
+  labs(x="CD135",y="CD127",col="cluster")+
+  theme_bw()
+
+plot_grid(p1, p2, p3, p4,ncol=2)
+```
+
+# trajectory
+
+```{r}
+# BiocManager::install("supraHex")
+# BiocManager::install("Rgraphviz")
+
+library(XGR)
+x = xConverter(srt_filter_cc@graphs$integrated_snn, from = "dgCMatrix",
+to ="igraph",verbose = FALSE)
+```
+
+```{r}
+ggplotColours <- function(n = 6, h = c(0, 360) + 15){
+  if ((diff(h) %% 360) < 1) h[2] <- h[2] - 360/n
+  hcl(h = (seq(h[1], h[2], length = n)), c = 100, l = 65)
+}
+```
+
+```{r,fig.width=9,fig.height=9}
+library(igraph)
+set.seed(19910603)
+l <- layout_with_fr(x,dim=2,niter=2000,start.temp=500)
+plot(x, layout=l, vertex.label=NA,vertex.size=3,vertex.color=srt_filter_cc$integrated_snn_res.1.2,palette=col9)
+```
+
+```{r}
+library(slingshot)
+sls = slingshot(l, clusterLabels = srt_filter_cc$integrated_snn_res.1.2,start.clus=1)
+
+plot(l, col=col9[srt_filter_cc$integrated_snn_res.1.2], pch=16, asp = 1)
+lines(sls, lwd=2, col='black')
+```
+
+```{r}
+top2 <- srt_filter_cc.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC)
+#DotPlot(srt_filter_cc, features = c(top2$gene,"CD135","Dach1GFP")) + RotatedAxis()
+```
+
+# LPP LMPP
+
+```{r,fig.width=10,fig.height=8}
+
+LPP = rep(FALSE,length(srt_filter_cc@active.ident))
+LPP[srt_filter_cc@active.ident==4] = TRUE
+
+CD135_hi_thr =  3.
+CD135_very_hi_thr =  3.5
+Dach1_thr = 2.8
+
+
+
+p1=ggplot(data=NULL,aes(x=srt_filter_cc@meta.data$CD135,y=srt_filter_cc@meta.data$CD150,col=LPP))+
+  geom_point(alpha=0.5,size=1)+
+  geom_vline(xintercept = CD135_very_hi_thr,linetype="dotted")+
+  geom_vline(xintercept = CD135_hi_thr,linetype="dotted")+
+  geom_text(aes(x=CD135_hi_thr, label="LMPP\n", y=2.7), colour="blue", angle=90, text=element_text(size=11))+
+  geom_text(aes(x=CD135_very_hi_thr, label="CD135++\n", y=2.7), colour="blue", angle=90, text=element_text(size=11))+
+  scale_color_manual(values=c("grey70","red"))+
+  labs(x="CD135",y="CD150",col="cluster")+
+  theme_bw()
+p2=ggplot(data=NULL,aes(x=srt_filter_cc@meta.data$Dach1GFP,y=srt_filter_cc@meta.data$CD135,col=LPP))+
+  geom_point(alpha=0.5,size=1)+
+  geom_vline(xintercept = Dach1_thr,linetype="dotted")+
+  geom_text(aes(x=Dach1_thr, label="Dach1-\n", y=3.5), colour="blue", angle=90, text=element_text(size=11))+
+  geom_hline(yintercept = CD135_hi_thr,linetype="dotted")+
+  geom_text(aes(y=CD135_hi_thr, label="LMPP\n", x=2.5), colour="blue", text=element_text(size=11))+
+  scale_color_manual(values=c("grey70","red"))+
+  labs(x="Dach1GFP",y="CD135",col="cluster")+
+  theme_bw()
+
+p3=ggplot(data=NULL,aes(x=srt_filter_cc@meta.data$cKit,y=srt_filter_cc@meta.data$Sca1,col=LPP))+
+  geom_point(alpha=0.5,size=1)+
+  scale_color_manual(values=c("grey70","red"))+
+  labs(x="cKit",y="Sca1",col="cluster")+
+  theme_bw()
+
+p4=ggplot(data=NULL,aes(x=srt_filter_cc@meta.data$CD135,y=srt_filter_cc@meta.data$CD127,col=LPP))+
+  geom_point(alpha=0.5,size=1)+
+  scale_color_manual(values=c("grey70","red"))+
+  labs(x="CD135",y="CD127",col="cluster")+
+  theme_bw()
+
+plot_grid(p1, p2, p3, p4,ncol=2)
+```
+
+```{r}
+LPP_cells = srt_filter_cc@meta.data$Dach1GFP < Dach1_thr & srt_filter_cc@meta.data$CD135 > CD135_hi_thr
+CD135pp_cells =  srt_filter_cc@meta.data$CD135 > CD135_very_hi_thr
+LMPP_cells =  srt_filter_cc@meta.data$CD135 > CD135_hi_thr
+
+LPP_ident = srt_filter_cc@active.ident[LPP_cells]
+CD135pp_ident = srt_filter_cc@active.ident[CD135pp_cells]
+LMPP_ident = srt_filter_cc@active.ident[LMPP_cells]
+```
+
+```{r}
+srt_filter_cc$CD135pp=CD135pp_cells
+srt_filter_cc$LPP=LPP_cells
+```
+
+```{r}
+prop.table(table(CD135pp_ident))
+prop.table(table(LPP_ident))
+prop.table(table(LMPP_ident))
+```
+
+```{r}
+ident_df = data.frame(
+  proportions = c(unname(prop.table(table(CD135pp_ident))), unname(prop.table(table(LPP_ident))), unname(prop.table(table(LMPP_ident)))),
+  clusters= as.factor(c(0:8,0:8,0:8)),
+  gate=c(rep("CD135pp",9),rep("LPP",9),rep("LMPP",9)))
+
+ggplot(data=ident_df,aes(x=clusters,y=proportions,fill=gate))+
+  geom_bar(stat="identity",position="dodge" )+
+  theme_bw()
+
+```
+
+
+```{r}
+srt_filter_LPP = srt_filter_cc
+Idents(srt_filter_LPP) = as.character(LPP_cells)
+srt_filter_CD135pp = srt_filter_cc
+Idents(srt_filter_CD135pp) = as.character(CD135pp_cells)
+```
+
+
+```{r}
+srt_filter_LPP.markers <- FindAllMarkers(srt_filter_LPP, logfc.threshold = 0.1,only.pos = TRUE,verbose=FALSE)
+top10 <- srt_filter_LPP.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+DoHeatmap(srt_filter_LPP, features = top10$gene)
+```
+
+```{r}
+srt_filter_CD135pp.markers <- FindAllMarkers(srt_filter_CD135pp, logfc.threshold = 0.1,only.pos = TRUE,verbose=FALSE)
+top10 <- srt_filter_CD135pp.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+DoHeatmap(srt_filter_CD135pp, features = top10$gene)
+```
+
+
+```{r}
+save.image("~/Dropbox/research/Dach1_paper/NN126/NN126_Seurat_cc_removel.RData")
+```
+
+# singleR
+
+```{r,fig.width=7,fig.height=10}
+top.n = 25
+singleR_score = readRDS("~/Dropbox/research/Dach1_paper/NN126/singleR_score.Rds")
+
+singleR_score = singleR_score[rownames(singleR_score) %in% colnames(srt_filter_cc),]
+singleR_score = singleR_score[colnames(srt_filter_cc),]
+m = apply(t(scale(t(singleR_score))),2,max)
+thres = sort(m,decreasing=TRUE)[min(top.n+1,length(m))]
+
+mmax = rowMaxs(singleR_score)
+mmin = rowMins(singleR_score)
+singleR_score = (singleR_score-mmin)/(mmax-mmin)
+singleR_score = singleR_score^3
+singleR_score_raw = singleR_score
+
+#singleR_score = singleR_score[,m>thres]
+singleR_score = singleR_score[,grepl("Stem cells",colnames(singleR_score))]
+singleR_score_r = singleR_score[order(srt_filter_cc$integrated_snn_res.1.2),]
+colo = col9
+names(colo) = levels(srt_filter_cc$integrated_snn_res.1.2)
+pheatmap::pheatmap(singleR_score_r,annotation_row=srt_filter_cc@meta.data[,c("seurat_clusters","Dach1GFP","CD150","CD135")],show_rownames=FALSE,cluster_rows = FALSE, annotation_colors=
+                     list(seurat_clusters=colo,
+                          Dach1GFP=c("dodgerblue2","white", "firebrick2"),
+                          CD150=c("dodgerblue2","white", "firebrick2"), 
+                          CD135=c("dodgerblue2","white", "firebrick2")))
+```
+
+```{r,fig.width=7,fig.height=10}
+pheatmap::pheatmap(singleR_score_r,annotation_row=srt_filter_cc@meta.data[,c("seurat_clusters","Dach1GFP","CD150","CD135")],show_rownames=FALSE,cluster_rows = TRUE, annotation_colors=
+                     list(seurat_clusters=colo,
+                          Dach1GFP=c("dodgerblue2","white", "firebrick2"),
+                          CD150=c("dodgerblue2","white", "firebrick2"), 
+                          CD135=c("dodgerblue2","white", "firebrick2")))
+```
+
+
+```{r,fig.width=7,fig.height=10}
+corr = apply(singleR_score_raw, 2, function(x){cor(x, srt_filter_cc$Dach1GFP,method="spearman")})
+ord = order(corr,decreasing = TRUE)
+singleR_score_r = singleR_score_raw[,c(ord[1:5],ord[(length(ord)-3):length(ord)])]
+pheatmap::pheatmap(singleR_score_r,annotation_row=srt_filter_cc@meta.data[,c("seurat_clusters","Dach1GFP","CD150","CD135")],show_rownames=FALSE, annotation_colors=
+                     list(seurat_clusters=colo,
+                          Dach1GFP=c("dodgerblue2","white", "firebrick2"),
+                          CD150=c("dodgerblue2","white", "firebrick2"), 
+                          CD135=c("dodgerblue2","white", "firebrick2")))
+```
+
+
+```{r}
+
+```
+
