@@ -1,0 +1,1038 @@
+---
+title: "NN179"
+output: html_notebook
+---
+
+
+```{r}
+library(scPipe)
+library(scater)
+library(scran)
+library(ggplot2)
+library(Seurat)
+library(cowplot)
+library(ggpubr)
+library(RColorBrewer)
+library(sctransform)
+library(flowCore)
+library(pheatmap)
+library(dplyr)
+library(readr)
+library(ggrepel)
+```
+
+
+
+
+```{r}
+gene_filter = function(sce){
+  keep1 = (apply(counts(sce), 1, function(x) mean(x[x>0])) > 1.1)  # average count larger than 1.1
+  keep2 = (rowSums(counts(sce)>0) > 5) # expressed in more than 5 cells
+  sce = sce[(keep1 & keep2), ]
+  return(sce)
+}
+scran_norm = function(sce){
+  sce = computeSumFactors(sce)
+  sce = normalize(sce)
+  return(sce)
+}
+scran_high_var = function(sce,topn=3000){
+  var.fit <- trendVar(sce, method="loess", use.spikes=FALSE)
+  var.out <- decomposeVar(sce, var.fit)
+  hvg.out <- var.out[order(var.out$bio, decreasing=TRUE)[1:topn], ]
+  rowData(sce)$hi_var = FALSE
+  rowData(sce)$hi_var[rownames(rowData(sce)) %in% rownames(hvg.out)] = TRUE
+  return(sce)
+}
+```
+
+
+```{r}
+sce_RPI4 = create_sce_by_dir(datadir="/Users/tian.l/Dropbox/research/Dach1_paper/NN179/RPI4",organism="mmusculus_gene_ensembl",gene_id_type="ensembl_gene_id")
+sce_RPI6 = create_sce_by_dir(datadir="/Users/tian.l/Dropbox/research/Dach1_paper/NN179/RPI6",organism="mmusculus_gene_ensembl",gene_id_type="ensembl_gene_id")
+sce_RPI7 = create_sce_by_dir(datadir="/Users/tian.l/Dropbox/research/Dach1_paper/NN179/RPI7",organism="mmusculus_gene_ensembl",gene_id_type="ensembl_gene_id")
+sce_RPI8 = create_sce_by_dir(datadir="/Users/tian.l/Dropbox/research/Dach1_paper/NN179/RPI8",organism="mmusculus_gene_ensembl",gene_id_type="ensembl_gene_id")
+```
+
+
+
+```{r}
+sce_RPI4 = calculate_QC_metrics(sce_RPI4)
+sce_RPI6 = calculate_QC_metrics(sce_RPI6)
+sce_RPI7 = calculate_QC_metrics(sce_RPI7)
+sce_RPI8 = calculate_QC_metrics(sce_RPI8)
+```
+
+
+```{r}
+sce_RPI4_qc = detect_outlier(sce_RPI4,comp = 2)
+sce_RPI6_qc = detect_outlier(sce_RPI6,comp = 2)
+sce_RPI7_qc = detect_outlier(sce_RPI7,comp = 2)
+sce_RPI8_qc = detect_outlier(sce_RPI8,comp = 2)
+
+sce_RPI4_qc = remove_outliers(sce_RPI4_qc)
+sce_RPI6_qc = remove_outliers(sce_RPI6_qc)
+sce_RPI7_qc = remove_outliers(sce_RPI7_qc)
+sce_RPI8_qc = remove_outliers(sce_RPI8_qc)
+
+sce_RPI4_qc = gene_filter(sce_RPI4_qc)
+sce_RPI6_qc = gene_filter(sce_RPI6_qc)
+sce_RPI7_qc = gene_filter(sce_RPI7_qc)
+sce_RPI8_qc = gene_filter(sce_RPI8_qc)
+
+comm_genes = Reduce(intersect,list(rownames(sce_RPI4_qc),
+                                   rownames(sce_RPI6_qc),
+                                   rownames(sce_RPI7_qc),
+                                   rownames(sce_RPI8_qc)))
+sce_RPI4_qc = convert_geneid(sce_RPI4_qc)
+sce_RPI6_qc = convert_geneid(sce_RPI6_qc)
+sce_RPI7_qc = convert_geneid(sce_RPI7_qc)
+sce_RPI8_qc = convert_geneid(sce_RPI8_qc)
+
+comm_genes = Reduce(intersect,list(rownames(sce_RPI4_qc),
+                                   rownames(sce_RPI6_qc),
+                                   rownames(sce_RPI7_qc),
+                                   rownames(sce_RPI8_qc)))
+
+comm_genes = comm_genes[!grepl("ENSMUSG",comm_genes)]
+comm_genes = comm_genes[!grepl("ERCC",comm_genes)]
+comm_genes = comm_genes[!grepl("Rik",comm_genes)]
+comm_genes = comm_genes[!grepl("Hist",comm_genes)]
+comm_genes = comm_genes[!grepl("^Rpl",comm_genes)]
+comm_genes = comm_genes[!grepl("^Rps",comm_genes)]
+comm_genes = comm_genes[!grepl("^H2ac",comm_genes)]
+comm_genes = comm_genes[!grepl("^Gm",comm_genes)]
+comm_genes = comm_genes[!grepl("^mt-",comm_genes)]
+
+sce_RPI4_qc = sce_RPI4_qc[comm_genes,]
+sce_RPI6_qc = sce_RPI6_qc[comm_genes,]
+sce_RPI7_qc = sce_RPI7_qc[comm_genes,]
+sce_RPI8_qc = sce_RPI8_qc[comm_genes,]
+
+colnames(sce_RPI4_qc) = paste("RPI4",colnames(sce_RPI4_qc),sep="_")
+colnames(sce_RPI6_qc) = paste("RPI6",colnames(sce_RPI6_qc),sep="_")
+colnames(sce_RPI7_qc) = paste("RPI7",colnames(sce_RPI7_qc),sep="_")
+colnames(sce_RPI8_qc) = paste("RPI8",colnames(sce_RPI8_qc),sep="_")
+sce_RPI4_qc$batch = "RPI4"
+sce_RPI6_qc$batch = "RPI6"
+sce_RPI7_qc$batch = "RPI7"
+sce_RPI8_qc$batch = "RPI8"
+```
+
+```{r}
+sce_RPI4_qc = logNormCounts(sce_RPI4_qc)
+sce_RPI6_qc = logNormCounts(sce_RPI6_qc)
+sce_RPI7_qc = logNormCounts(sce_RPI7_qc)
+sce_RPI8_qc = logNormCounts(sce_RPI8_qc)
+```
+
+
+```{r}
+library(SingleR)
+ref.se <- ImmGenData()
+
+pred.RPI4 <- SingleR(test=sce_RPI4_qc, ref=ref.se, labels=ref.se$label.fine)
+pred.RPI6 <- SingleR(test=sce_RPI6_qc, ref=ref.se, labels=ref.se$label.fine)
+pred.RPI7 <- SingleR(test=sce_RPI7_qc, ref=ref.se, labels=ref.se$label.fine)
+pred.RPI8 <- SingleR(test=sce_RPI8_qc, ref=ref.se, labels=ref.se$label.fine)
+```
+
+```{r}
+tmp_t = table(c(pred.RPI4$pruned.labels, pred.RPI6$pruned.labels, pred.RPI7$pruned.labels, pred.RPI8$pruned.labels))
+tmp_t[tmp_t>10]
+```
+
+```{r}
+#kept_celltype = c("B cells (proB.CLP)","T cells (T.ETP)","Stem cells (MLP)","Stem cells (SC.STSL)","Stem cells (SC.MPP34F)","Stem cells (SC.LT34F)","Stem cells (SC.CMP.DR)","Stem cells (GMP)","Stem cells (SC.CDP)")
+kept_celltype = colnames(pred.RPI4$scores)
+comb_scores = rbind(pred.RPI4$scores[,kept_celltype],
+                    pred.RPI6$scores[,kept_celltype],
+                    pred.RPI7$scores[,kept_celltype],
+                    pred.RPI8$scores[,kept_celltype])
+rownames(comb_scores) = c(rownames(pred.RPI4), rownames(pred.RPI6), rownames(pred.RPI7), rownames(pred.RPI8))
+```
+
+
+
+```{r}
+C084_Naik_SaraTomei_NN179_SeqPrimer_layout_Jan20_ST_ <-readxl::read_excel("~/Dropbox/research/Dach1_paper/NN179/C084_Naik_SaraTomei_NN179_SeqPrimer layout_Jan20(ST).xlsx", sheet = "Sample & Index", skip = 3)
+
+FACS_anno = C084_Naik_SaraTomei_NN179_SeqPrimer_layout_Jan20_ST_[,c("Well position","(separate index read)...7","<R660/20-A>: cKit APC","<V450/50-A>: PIR-A PB","<V660/20-A>: IL7R BV650","<R780/60-A>: CD48 APC Cy7","<B695/40-A>: CD11b BB700","<Y780/60-A>: CD150 PE Cy7","<Y670/14-A>: PI","<Y610/20-A>: Sca1 A594","<B530/30-A>: Dach1 GFP","<V610/20-A>: CD16/32 BV605","<Y582/15-A>: Flt3 PE")]
+FACS_anno = FACS_anno[!is.na(FACS_anno$`<V450/50-A>: PIR-A PB`),]
+FACS_anno$`(separate index read)...7` = gsub(" ", "", FACS_anno$`(separate index read)...7`, fixed = TRUE)
+FACS_anno$cell_id = paste(FACS_anno$`(separate index read)...7`,FACS_anno$`Well position`,sep="_")
+FACS_anno = FACS_anno[!is.na(FACS_anno$`<B530/30-A>: Dach1 GFP`),]
+```
+
+```{r}
+biexp  <- biexponentialTransform("myTransform",a=100,c=5000)
+logf = function(x){
+    x[x<100]=100
+    return(log10(x+1))
+}
+
+
+
+FACS_anno[,c("<R660/20-A>: cKit APC","<V450/50-A>: PIR-A PB","<V660/20-A>: IL7R BV650","<R780/60-A>: CD48 APC Cy7","<B695/40-A>: CD11b BB700","<Y780/60-A>: CD150 PE Cy7","<Y670/14-A>: PI","<Y610/20-A>: Sca1 A594","<B530/30-A>: Dach1 GFP","<V610/20-A>: CD16/32 BV605","<Y582/15-A>: Flt3 PE")] = apply(FACS_anno[,c("<R660/20-A>: cKit APC","<V450/50-A>: PIR-A PB","<V660/20-A>: IL7R BV650","<R780/60-A>: CD48 APC Cy7","<B695/40-A>: CD11b BB700","<Y780/60-A>: CD150 PE Cy7","<Y670/14-A>: PI","<Y610/20-A>: Sca1 A594","<B530/30-A>: Dach1 GFP","<V610/20-A>: CD16/32 BV605","<Y582/15-A>: Flt3 PE")], 2, function(x){logf(x)})
+
+plot(FACS_anno$`<Y582/15-A>: Flt3 PE`,FACS_anno$`<Y780/60-A>: CD150 PE Cy7`)
+
+plot(FACS_anno$`<Y582/15-A>: Flt3 PE`,FACS_anno$`<B530/30-A>: Dach1 GFP`)
+```
+
+
+```{r,warning=FALSE,message=FALSE,results='hide'}
+srt4 <- CreateSeuratObject(counts = counts(sce_RPI4_qc),meta.data=as.data.frame(colData(sce_RPI4_qc)))
+srt4 <- SCTransform(object = srt4, variable.features.n=2000, verbose = FALSE)
+
+srt6 <- CreateSeuratObject(counts = counts(sce_RPI6_qc),meta.data=as.data.frame(colData(sce_RPI6_qc)))
+srt6 <- SCTransform(object = srt6, variable.features.n=2000,verbose = FALSE)
+
+srt7 <- CreateSeuratObject(counts = counts(sce_RPI7_qc),meta.data=as.data.frame(colData(sce_RPI7_qc)))
+srt7 <- SCTransform(object = srt7, variable.features.n=2000,verbose = FALSE)
+
+srt8 <- CreateSeuratObject(counts = counts(sce_RPI8_qc),meta.data=as.data.frame(colData(sce_RPI8_qc)))
+srt8 <- SCTransform(object = srt8, variable.features.n=2000,verbose = FALSE)
+
+options(future.globals.maxSize = 2100 * 1024^2)
+immune.features <- SelectIntegrationFeatures(object.list = list(srt4, srt6, srt7, srt8), nfeatures = 2000, verbose = FALSE)
+immune.combined <- PrepSCTIntegration(object.list = list(srt4, srt6, srt7, srt8), anchor.features = immune.features, verbose = FALSE)
+
+immune.anchors <- FindIntegrationAnchors(object.list = immune.combined, normalization.method = "SCT", 
+                                         anchor.features = immune.features, verbose = FALSE)
+srt_combine <- IntegrateData(anchorset = immune.anchors, normalization.method = "SCT", dims = 1:20,
+                                 verbose = FALSE)
+```
+
+```{r,warning=FALSE,message=FALSE,results='hide'}
+srt_combine <- RunPCA(object = srt_combine, verbose = FALSE)
+srt_combine <- RunUMAP(object = srt_combine, dims = 1:20, verbose = FALSE)
+srt_combine <- FindNeighbors(object = srt_combine, dims = 1:20, verbose = FALSE)
+srt_combine <- FindClusters(object = srt_combine, verbose = FALSE)
+# Visualization
+p1 <- DimPlot(srt_combine, reduction = "umap", group.by = "batch")
+p2 <- DimPlot(srt_combine, reduction = "umap", label = TRUE)
+```
+
+
+```{r,fig.width=10,fig.height=5}
+plot_grid(p1, p2)
+```
+
+
+```{r}
+FACS_anno = as.data.frame(FACS_anno)
+FACS_anno = FACS_anno[match(rownames(srt_combine@meta.data),FACS_anno$cell_id),]
+srt_combine@meta.data = cbind(srt_combine@meta.data, FACS_anno)
+srt_combine = srt_combine[,!is.na(srt_combine$`<B530/30-A>: Dach1 GFP`)]
+```
+
+
+
+
+
+```{r,fig.height=9,fig.width=9}
+FeaturePlot(srt_combine,features = colnames(srt_combine@meta.data)[23:33],pt.size=0.1,max.cutoff="q95",ncol=3)
+```
+
+```{r}
+FeaturePlot(srt_combine,features =c("Rag1","Rag2","Dntt"),pt.size=0.1,max.cutoff="q95")
+```
+
+```{r}
+srt_combine.markers <- FindAllMarkers(srt_combine, only.pos = TRUE,verbose=FALSE)
+```
+
+```{r,fig.height=12,fig.width=10}
+top10 <- srt_combine.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+DoHeatmap(srt_combine, features = top10$gene)
+```
+
+```{r}
+s.genes <- tolower(cc.genes$s.genes)
+g2m.genes <- tolower(cc.genes$g2m.genes)
+simpleCap <- function(x) {
+  paste(toupper(substring(x, 1,1)), substring(x, 2),
+      sep="")
+}
+s.genes = simpleCap(s.genes)
+g2m.genes = simpleCap(g2m.genes)
+```
+
+```{r}
+srt_combine <- CellCycleScoring(srt_combine, s.features = s.genes, g2m.features = g2m.genes, set.ident = FALSE)
+srt_combine$CC.Difference <- srt_combine$S.Score - srt_combine$G2M.Score
+head(srt_combine[[]])
+```
+
+```{r}
+DimPlot(srt_combine, reduction = "umap", group.by = "Phase")
+```
+
+```{r}
+#srt_filter_cc <- ScaleData(srt_combine, vars.to.regress = c("CC.Difference"), features = rownames(srt_combine),verbose = FALSE)
+srt_filter_cc <- ScaleData(srt_combine,  vars.to.regress = c("S.Score", "G2M.Score"), features = rownames(srt_combine),verbose = FALSE)
+```
+
+```{r,warning=FALSE,message=FALSE,results='hide'}
+srt_filter_cc <- RunPCA(object = srt_filter_cc, verbose = FALSE)
+srt_filter_cc <- RunUMAP(object = srt_filter_cc, dims = 1:20, verbose = FALSE)
+srt_filter_cc <- FindNeighbors(object = srt_filter_cc, dims = 1:20, verbose = FALSE)
+srt_filter_cc <- FindClusters(object = srt_filter_cc, resolution = 1., verbose = FALSE)
+# Visualization
+p1 <- DimPlot(srt_filter_cc, reduction = "umap", group.by = "Phase")
+p2 <- DimPlot(srt_filter_cc, reduction = "umap", label = TRUE)
+```
+
+
+```{r,fig.width=10,fig.height=5}
+plot_grid(p1, p2)
+```
+
+
+
+
+```{r}
+srt_filter_cc.markers <- FindAllMarkers(srt_filter_cc, only.pos = TRUE,verbose=FALSE)
+```
+
+```{r,fig.height=9,fig.width=8}
+top10 <- srt_filter_cc.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+DoHeatmap(srt_filter_cc, features = top10$gene)
+```
+
+```{r,fig.height=7,fig.width=7}
+FeaturePlot(srt_filter_cc,features = colnames(srt_filter_cc@meta.data)[23:33],pt.size=0.5,max.cutoff="q95",ncol=3)
+```
+
+
+```{r}
+ggplot(data=NULL,aes(x=log2(srt_filter_cc$`<Y582/15-A>: Flt3 PE`),y=log2(srt_filter_cc$`<B530/30-A>: Dach1 GFP`),col=as.factor(srt_filter_cc$seurat_clusters)))+
+  geom_point()+
+  scale_color_brewer(palette = "Set1")+
+  theme_bw()
+```
+
+```{r}
+mk_genes = unique(srt_filter_cc.markers[srt_filter_cc.markers$p_val_adj<0.05,]$gene)
+
+DE_expr = srt_filter_cc@assays$SCT@scale.data[mk_genes,]
+```
+
+
+```{r}
+
+database = "immgen"
+immgen_samples <- read.delim(paste0("/Users/tian.l/Dropbox/research/Dach1_paper/ref_data/",database,"_samples.txt"), stringsAsFactors=FALSE)
+immgen_probes <- read.delim(paste0("/Users/tian.l/Dropbox/research/Dach1_paper/ref_data/",database,"_probes.txt"), header=FALSE, stringsAsFactors=FALSE)
+immgen_expression <- read.delim(paste0("/Users/tian.l/Dropbox/research/Dach1_paper/ref_data/",database,"_expression.txt"), stringsAsFactors=FALSE)
+
+library('biomaRt')
+mart <- useDataset("mmusculus_gene_ensembl", useMart("ensembl"))
+G_list <- getBM(filters= "ensembl_gene_id", attributes= c("ensembl_gene_id", "external_gene_name", "description"),values=immgen_probes$V2 ,mart=mart)
+immgen_probes = immgen_probes[immgen_probes$V2 %in% G_list$ensembl_gene_id,]
+G_list = G_list[match(immgen_probes$V2, G_list$ensembl_gene_id),]
+immgen_probes$external_gene_name = G_list$external_gene_name
+
+immgen_expression = immgen_expression[immgen_expression$probeId %in% immgen_probes$V1,]
+immgen_probes = immgen_probes[immgen_probes$V1 %in% immgen_expression$probeId,]
+immgen_probes = immgen_probes[match(immgen_expression$probeId, immgen_probes$V1),]
+immgen_expression$gene_id = immgen_probes$external_gene_name
+immgen_expression = immgen_expression[!duplicated(immgen_expression$gene_id),]
+g_i = immgen_expression$gene_id
+immgen_expression = immgen_expression[,!(colnames(immgen_expression) %in% c("probeId","gene_id"))]
+immgen_expression = as.matrix(immgen_expression)
+rownames(immgen_expression) = g_i
+
+table(immgen_samples$cell_lineage)
+immgen_samples$sampleId = gsub("-",".",immgen_samples$sampleId)
+#SC_list = immgen_samples[immgen_samples$cell_lineage == "Stem Cells", "sampleId"]
+
+SC_list = c("SC_CDP_BM","SC_CMP_BM","SC_GMP_BM",
+            "SC_LTSL_BM","SC_LTSL_BM","SC_MDP_BM",
+            "SC_MEP_BM","SC_MPP34F_BM","SC_ST34F_BM",
+            "SC_STSL_BM","preB_FrD_BM","B1b_PC")
+#SC_list = immgen_samples$sampleId
+sub_immgen_expression = immgen_expression[rownames(immgen_expression) %in% rownames(DE_expr), colnames(immgen_expression) %in% SC_list]
+sub_immgen_expression = sub_immgen_expression[!duplicated(rownames(sub_immgen_expression)),]
+sub_DE_expr = DE_expr[rownames(DE_expr) %in% rownames(sub_immgen_expression),]
+sub_DE_expr = sub_DE_expr[!duplicated(rownames(sub_DE_expr)),]
+sub_DE_expr = sub_DE_expr[order(rownames(sub_DE_expr)),]
+sub_immgen_expression = sub_immgen_expression[order(rownames(sub_immgen_expression)),]
+
+
+p.val_mat = c()
+for (i in 1:ncol(sub_immgen_expression))
+{
+  p.val_vec = apply(sub_DE_expr, 2, function(x){
+  cor.test(x,sub_immgen_expression[,i],
+         method = "spearman",
+         alternative = "greater",exact=FALSE)$p.value})
+  p.val_mat = rbind(p.val_mat,-log10(p.val_vec))
+}
+rownames(p.val_mat) = colnames(sub_immgen_expression)
+
+# hm_immgen = heatmap.2(p.val_mat[,order(mycl)],trace="none",
+#           dendrogram="none",
+#           Colv=FALSE,
+#           col=hmcol,
+#           scale="column",
+#           labRow = "",
+#           #ColSideColors = myClusterSideBar[order(mycl)],
+#           labCol = "",
+#           density.info="none",
+#           key=FALSE)
+
+#p_ma = p.val_mat[,order(mycl)]
+#p_ma = p_ma[hm_immgen$rowInd,]
+
+p.val_mat_s = scale(p.val_mat)
+p.val_mat_s[p.val_mat_s>2] = 2
+p.val_mat_s[p.val_mat_s<(-2)] = -2
+
+pheatmap(p.val_mat_s[,order(srt_filter_cc$seurat_clusters)],cluster_cols = F,show_colnames = F,scale="none",annotation_col = srt_filter_cc@meta.data[,c("seurat_clusters","orig.ident")],filename="figs/immgen_sim_all.pdf",width = 10,height = 20)
+```
+
+```{r}
+comb_scores = comb_scores[colnames(srt_filter_cc),]
+comb_scores = scale(comb_scores)
+comb_scores[comb_scores>2.5] = 2.5
+comb_scores[comb_scores<(-2.5)] = -2.5
+
+pheatmap(comb_scores[order(srt_filter_cc$seurat_clusters),],scale = "none",cluster_rows = FALSE,show_rownames = FALSE,annotation_row = srt_filter_cc@meta.data[,c("seurat_clusters","<V660/20-A>: IL7R BV650")],fontsize = 6,filename="figs/heatmap_singleR_score.pdf",width = 20,height = 10)
+```
+
+
+
+```{r}
+top10 <- srt_filter_cc.markers %>% group_by(cluster) %>% top_n(n = 10, wt = -p_val_adj)
+
+top_ge = c()
+for(i in 0:(length(unique(srt_filter_cc$seurat_clusters))-1)){
+  tmp_mk_df = top10[top10$cluster==i,]
+  tmp_mk_df = tmp_mk_df[order(tmp_mk_df$avg_logFC,decreasing = TRUE),]
+  if (i %in% c(1, 6)){
+    tmp_mk_df = tmp_mk_df[1:6,]
+  }else{
+    tmp_mk_df = tmp_mk_df[1:3,]
+  }
+  top_ge = c(top_ge, tmp_mk_df$gene)
+}
+top_ge = top_ge[top_ge %in% rownames(srt_filter_cc@assays$integrated@scale.data)]
+tmp_mat = srt_filter_cc@assays$integrated@scale.data[top_ge,]
+#tmp_mat = srt_filter_cc@assays$SCT@scale.data[top_ge,]
+tmp_mat[tmp_mat>2.5] = 2.5
+tmp_mat[tmp_mat<(-2.5)] = -2.5
+
+anno_df = data.frame(clusters=srt_filter_cc$seurat_clusters,
+                     Dach1GFP=srt_filter_cc@meta.data[,"<B530/30-A>: Dach1 GFP"],
+                     CD150=srt_filter_cc@meta.data[,"<Y780/60-A>: CD150 PE Cy7"],
+                     CD135=srt_filter_cc@meta.data[,"<Y582/15-A>: Flt3 PE"],
+                     cKit=srt_filter_cc@meta.data[,"<R660/20-A>: cKit APC"],
+                     Sca1=srt_filter_cc@meta.data[,"<Y610/20-A>: Sca1 A594"],
+                     CD127=srt_filter_cc@meta.data[,"<V660/20-A>: IL7R BV650"],
+                     CD48=srt_filter_cc@meta.data[,"<R780/60-A>: CD48 APC Cy7"],
+                     B_cell=comb_scores[,"B cells (B1b)"],
+                     CLP=comb_scores[,"B cells (preB.FrD)"],
+                     GMP=comb_scores[,"Stem cells (GMP)"],
+                     CMP=comb_scores[,"Stem cells (SC.CMP.DR)"],
+                     LMPP=comb_scores[,"Stem cells (SC.MPP34F)"],
+                     #STSL=comb_scores[,"Stem cells (SC.STSL)"],
+                     LTSL=comb_scores[,"Stem cells (SC.LT34F)"],stringsAsFactors = FALSE)
+
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+col9 = getPalette(9)
+
+ttt = col9[2]
+col9[2] = col9[1]
+col9[1] = ttt
+
+names(col9) = as.character(0:8)
+annotation_colors = list(
+  clusters=col9,
+  Dach1GFP=BlueAndRed(),
+  CD150=BlueAndRed(),
+  CD135=BlueAndRed(),
+  cKit=BlueAndRed(), 
+  CD127=BlueAndRed(),
+  Sca1=BlueAndRed()[floor(50*(min(srt_filter_cc$`<Y610/20-A>: Sca1 A594`)-0)/(max(srt_filter_cc$`<Y610/20-A>: Sca1 A594`)-0)):50],  
+  CD48=BlueAndRed(),
+  GMP=BlueAndRed(),
+  B_cell=BlueAndRed(),
+  CLP=BlueAndRed(),
+  CMP=BlueAndRed(),
+  LMPP=BlueAndRed(),
+  STSL=BlueAndRed(),
+  LTSL=BlueAndRed()
+)
+
+#htmp = hclust(dist(anno_df[,c("B_cell","CLP","CMP","LMPP","STSL","LTSL")]))
+
+pheatmap(tmp_mat[,order(srt_filter_cc$seurat_clusters)],
+         cluster_cols = FALSE, 
+         cluster_rows = FALSE,
+         annotation_col = anno_df,
+         annotation_colors=annotation_colors,
+         show_colnames = FALSE,
+         color=PurpleAndYellow(),
+         filename="figs/heatmap_with_Seurat_cluster_all_markers.pdf",width = 7,height = 8.5)
+
+
+pheatmap(tmp_mat[,order(srt_filter_cc$seurat_clusters)],
+         cluster_cols = FALSE, 
+         cluster_rows = FALSE,
+         annotation_col = anno_df,
+         annotation_colors=annotation_colors,
+         show_colnames = FALSE,
+         color=PurpleAndYellow(),
+         filename="figs/heatmap_with_Seurat_cluster_all_markers_big.pdf",width = 7,height = 20)
+```
+
+
+```{r}
+library(slingshot)
+
+
+
+
+sds <- slingshot(srt_filter_cc@reductions$umap@cell.embeddings, srt_filter_cc$seurat_clusters, start.clus=3)
+```
+
+```{r}
+plot(sds@curves$curve3)
+```
+
+
+
+
+```{r}
+sds@lineages$Lineage3
+```
+
+```{r}
+
+```
+
+
+```{r}
+order_df = srt_filter_cc@meta.data
+order_df = order_df[sds@curves$curve3$ord,]
+order_df = order_df[order_df$seurat_clusters %in% sds@lineages$Lineage3,]
+order_df_raw = order_df
+
+
+
+plot(order_df_raw$`<V660/20-A>: IL7R BV650`, order_df$`<V660/20-A>: IL7R BV650`)
+hist(order_df$`<V660/20-A>: IL7R BV650`)
+```
+
+
+```{r}
+plist = list()
+plist[[1]] = ggplot(data=NULL,aes(x=1:nrow(order_df),
+                     y=order_df$`<V660/20-A>: IL7R BV650`))+
+  labs(x="pseudotime",y="CD127")+
+  geom_point(size=0.5,aes(col=order_df$seurat_clusters))+
+  stat_smooth(method = "loess", formula = y ~ x, size = 1,span=.3)+
+  theme_bw()
+
+plist[[2]] = ggplot(data=NULL,aes(x=1:nrow(order_df),
+                     y=order_df$`<B530/30-A>: Dach1 GFP`))+
+  labs(x="pseudotime",y="Dach1")+
+  geom_point(size=0.5,aes(col=order_df$seurat_clusters))+
+  stat_smooth(method = "loess", formula = y ~ x, size = 1,span=.4)+
+  theme_bw()
+
+plist[[3]] = ggplot(data=NULL,aes(x=1:nrow(order_df),
+                     y=order_df$`<Y780/60-A>: CD150 PE Cy7`))+
+  labs(x="pseudotime",y="CD150")+
+ geom_point(size=0.5,aes(col=order_df$seurat_clusters))+
+  stat_smooth(method = "loess", formula = y ~ x, size = 1,span=.3)+
+  theme_bw()
+
+plist[[4]] = ggplot(data=NULL,aes(x=1:nrow(order_df),
+                     y=order_df$`<R780/60-A>: CD48 APC Cy7`))+
+  labs(x="pseudotime",y="CD48")+
+  geom_point(size=0.5,aes(col=order_df$seurat_clusters))+
+  stat_smooth(method = "loess", formula = y ~ x, size = 1,span=.6)+
+  theme_bw()
+
+plist[[5]] = ggplot(data=NULL,aes(x=1:nrow(order_df),
+                     y=order_df$`<R660/20-A>: cKit APC`))+
+  labs(x="pseudotime",y="cKit")+
+  geom_point(size=0.5,aes(col=order_df$seurat_clusters))+
+  stat_smooth(method = "loess", formula = y ~ x, size = 1,span=.5)+
+  theme_bw()
+
+plist[[6]] = ggplot(data=NULL,aes(x=1:nrow(order_df),
+                     y=order_df$`<Y610/20-A>: Sca1 A594`))+
+  labs(x="pseudotime",y="Sca1")+
+  geom_point(size=0.5,aes(col=order_df$seurat_clusters))+
+  stat_smooth(method = "loess", formula = y ~ x, size = 1,span=.6)+
+  theme_bw()
+
+plist[[7]] = ggplot(data=NULL,aes(x=1:nrow(order_df),
+                     y=order_df$`<Y582/15-A>: Flt3 PE`))+
+  labs(x="pseudotime",y="CD135")+
+  geom_point(size=0.5,aes(col=order_df$seurat_clusters))+
+  stat_smooth(method = "loess", formula = y ~ x, size = 1,span=.7)+
+  theme_bw()
+
+ggarrange(plotlist = plist,ncol=1,align = "h",common.legend = TRUE)
+ggsave("figs/pseudotime_FACS_marker.pdf",width=5,height=10)
+```
+
+```{r}
+plist = list()
+
+tmp_expr = srt_filter_cc@assays$integrated@scale.data["Dntt",sds@curves$curve3$ord[srt_filter_cc$seurat_clusters %in% sds@lineages$Lineage3]]
+tmp_expr[tmp_expr<quantile(tmp_expr,0.05)] = quantile(tmp_expr,0.05)
+tmp_df = data.frame(tmp_expr=tmp_expr,seurat_clusters=order_df$seurat_clusters,stringsAsFactors = FALSE)
+tmp_df$move_med =  zoo::rollapplyr(tmp_df$tmp_expr,FUN =median,width = 20,fill=NA)
+plist[[1]] = ggplot(data=tmp_df,aes(x=1:nrow(tmp_df),
+                     y=tmp_expr))+
+  labs(col="",title="Dntt")+
+  geom_point(size=0.5,aes(col=seurat_clusters))+
+  scale_color_manual(values = col9)+
+  stat_smooth(aes(x=1:nrow(tmp_df),y=move_med),method = "loess", formula = y ~ x, size = 1,span=.3)+
+  theme_bw()+
+  theme(plot.title = element_text(hjust = 0.5),panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.title = element_blank(),axis.text.x = element_blank(),axis.ticks.x = element_blank(),axis.line = element_line(colour = "black"))
+
+tmp_expr = srt_filter_cc@assays$integrated@scale.data["Satb1",sds@curves$curve3$ord[srt_filter_cc$seurat_clusters %in% sds@lineages$Lineage3]]
+tmp_expr[tmp_expr<quantile(tmp_expr,0.05)] = quantile(tmp_expr,0.05)
+tmp_df = data.frame(tmp_expr=tmp_expr,seurat_clusters=order_df$seurat_clusters,stringsAsFactors = FALSE)
+tmp_df$move_med =  zoo::rollapplyr(tmp_df$tmp_expr,FUN =median,width = 10,fill=NA)
+plist[[2]] = ggplot(data=tmp_df,aes(x=1:nrow(tmp_df),
+                     y=tmp_expr))+
+  labs(col="",title="Satb1")+
+  geom_point(size=0.5,aes(col=seurat_clusters))+
+  scale_color_manual(values = col9)+
+  stat_smooth(aes(x=1:nrow(tmp_df),y=move_med),method = "loess", formula = y ~ x, size = 1,span=.3)+
+  theme_bw()+
+  theme(plot.title = element_text(hjust = 0.5),panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.title = element_blank(),axis.text.x = element_blank(),axis.ticks.x = element_blank(),axis.line = element_line(colour = "black"))
+
+tmp_expr = srt_filter_cc@assays$integrated@scale.data["Ncf1",sds@curves$curve3$ord[srt_filter_cc$seurat_clusters %in% sds@lineages$Lineage3]]
+tmp_expr[tmp_expr<quantile(tmp_expr,0.05)] = quantile(tmp_expr,0.05)
+tmp_df = data.frame(tmp_expr=tmp_expr,seurat_clusters=order_df$seurat_clusters,stringsAsFactors = FALSE)
+plist[[3]] = ggplot(data=tmp_df,aes(x=1:nrow(tmp_df),
+                     y=tmp_expr))+
+  labs(col="",title="Ncf1")+
+  geom_point(size=0.5,aes(col=seurat_clusters))+
+  scale_color_manual(values = col9)+
+  stat_smooth(method = "loess", formula = y ~ x, size = 1,span=.3)+
+  theme_bw()+
+  theme(plot.title = element_text(hjust = 0.5),panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.title = element_blank(),axis.text.x = element_blank(),axis.ticks.x = element_blank(),axis.line = element_line(colour = "black"))
+
+tmp_expr = srt_filter_cc@assays$integrated@scale.data["Vpreb1",sds@curves$curve3$ord[srt_filter_cc$seurat_clusters %in% sds@lineages$Lineage3]]
+tmp_expr[tmp_expr<quantile(tmp_expr,0.05)] = quantile(tmp_expr,0.05)
+tmp_df = data.frame(tmp_expr=tmp_expr,seurat_clusters=order_df$seurat_clusters,stringsAsFactors = FALSE)
+plist[[4]] = ggplot(data=tmp_df,aes(x=1:nrow(tmp_df),
+                     y=tmp_expr))+
+  labs(col="",title="Vpreb1")+
+  geom_point(size=0.5,aes(col=seurat_clusters))+
+  scale_color_manual(values = col9)+
+  stat_smooth(method = "loess", formula = y ~ x, size = 1,span=.3)+
+  theme_bw()+
+  theme(plot.title = element_text(hjust = 0.5),panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.title = element_blank(),axis.text.x = element_blank(),axis.ticks.x = element_blank(),axis.line = element_line(colour = "black"))
+
+
+
+
+ggarrange(plotlist = plist,ncol=1,align = "h",common.legend = TRUE)
+ggsave("figs/pseudotime_marker_genes.pdf",width=5,height=10)
+```
+
+
+```{r}
+DimPlot(srt_filter_cc, reduction = "umap", label = FALSE,cols = col9)+theme(legend.position = "none",line = element_blank(),
+                                                                            axis.text  =element_blank(),
+        title = element_blank())
+ggsave("figs/umap_col_by_cluster.pdf",width = 4.5,height = 4.5)
+```
+
+
+```{r}
+plot(srt_filter_cc$`<Y780/60-A>: CD150 PE Cy7`,srt_filter_cc$`<R780/60-A>: CD48 APC Cy7`)
+```
+
+```{r}
+plot(srt_filter_cc$`<Y582/15-A>: Flt3 PE`,srt_filter_cc$`<R780/60-A>: CD48 APC Cy7`)
+```
+
+```{r}
+plot(srt_filter_cc$`<Y582/15-A>: Flt3 PE` ,srt_filter_cc$`<Y780/60-A>: CD150 PE Cy7`)
+```
+
+```{r}
+plot(srt_filter_cc$`<Y582/15-A>: Flt3 PE` ,srt_filter_cc$`<B530/30-A>: Dach1 GFP`)
+```
+
+```{r}
+plot(srt_filter_cc$`<V660/20-A>: IL7R BV650` ,srt_filter_cc$`<Y582/15-A>: Flt3 PE`)
+```
+
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4542150/
+
+```{r}
+#LT-HSC: CD135-  CD150+  CD48-
+is_LTHSC = (srt_filter_cc$`<Y582/15-A>: Flt3 PE`<3.5) & (srt_filter_cc$`<Y780/60-A>: CD150 PE Cy7`>3.5) & (srt_filter_cc$`<R780/60-A>: CD48 APC Cy7`<3.3)
+#ST-HSC: CD135-  CD150-  CD48-
+is_STHSC = (srt_filter_cc$`<Y582/15-A>: Flt3 PE`<3.5) & (srt_filter_cc$`<Y780/60-A>: CD150 PE Cy7`<3.5) & (srt_filter_cc$`<R780/60-A>: CD48 APC Cy7`<3.3)
+#MPP2: CD135-  CD150+  CD48+
+is_MPP2 = (srt_filter_cc$`<Y582/15-A>: Flt3 PE`<3.5) & (srt_filter_cc$`<Y780/60-A>: CD150 PE Cy7`>3.5) & (srt_filter_cc$`<R780/60-A>: CD48 APC Cy7`>3.3)
+#MPP3: CD135-  CD150-  CD48+
+is_MPP3 = (srt_filter_cc$`<Y582/15-A>: Flt3 PE`<3.5) & (srt_filter_cc$`<Y780/60-A>: CD150 PE Cy7`<3.5) & (srt_filter_cc$`<R780/60-A>: CD48 APC Cy7`>3.3)
+is_MPP4 = (srt_filter_cc$`<Y582/15-A>: Flt3 PE`>3.5) & (srt_filter_cc$`<Y780/60-A>: CD150 PE Cy7`<3.5) 
+is_CLP = srt_filter_cc$`<V660/20-A>: IL7R BV650`>3
+srt_filter_cc$gate = "MPP2"
+srt_filter_cc$gate[is_LTHSC]="LT-HSC"
+srt_filter_cc$gate[is_STHSC]="ST-HSC"
+srt_filter_cc$gate[is_MPP2]="MPP2"
+srt_filter_cc$gate[is_MPP3]="MPP3"
+srt_filter_cc$gate[is_MPP4]="MPP4"
+srt_filter_cc$gate[is_CLP]="CLP"
+
+DimPlot(srt_filter_cc, group.by = "gate", label = FALSE)+theme(line = element_blank(),
+                                                                            axis.text  =element_blank(),
+        title = element_blank())
+```
+
+```{r}
+srt_filter_cc$FACS_CT = "LMPP"
+srt_filter_cc$FACS_CT[srt_filter_cc$`<Y780/60-A>: CD150 PE Cy7`>3.5 & srt_filter_cc$`<Y582/15-A>: Flt3 PE`<3.5] = "LT + MPP2"
+srt_filter_cc$FACS_CT[srt_filter_cc$`<Y780/60-A>: CD150 PE Cy7`<3.5 & srt_filter_cc$`<Y582/15-A>: Flt3 PE`<3.5] = "ST + MPP3"
+srt_filter_cc$FACS_CT[srt_filter_cc$`<Y780/60-A>: CD150 PE Cy7`<3.5 & srt_filter_cc$`<Y582/15-A>: Flt3 PE`>3.5] = "LMPP"
+srt_filter_cc$FACS_CT[srt_filter_cc$`<V660/20-A>: IL7R BV650`>3] = "CLP"
+```
+
+
+```{r}
+DimPlot(srt_filter_cc, group.by = "FACS_CT", label = FALSE)+theme(line = element_blank(),
+                                                                            axis.text  =element_blank(),
+        title = element_blank())
+ggsave("figs/umap_col_by_FACS_gate.pdf",width = 5.5,height = 4.5)
+```
+
+```{r}
+p1 = FeaturePlot(srt_filter_cc,features = c("Dntt"),pt.size=0.5,max.cutoff="q95",ncol=4,cols=BlueAndRed())+theme(line = element_blank(),text=element_text(size=12),
+                                                                            axis.text  =element_blank(),axis.title = element_blank(),legend.position="none")
+p2 = FeaturePlot(srt_filter_cc,features = c("Satb1"),pt.size=0.5,max.cutoff="q95",ncol=4,cols=BlueAndRed())+theme(line = element_blank(),text=element_text(size=12),
+                                                                            axis.text  =element_blank(),axis.title = element_blank(),legend.position="none")
+p3 = FeaturePlot(srt_filter_cc,features = c("Notch1"),pt.size=0.5,max.cutoff="q95",ncol=4,cols=BlueAndRed())+theme(line = element_blank(),
+                                                                            axis.text  =element_blank(),axis.title = element_blank(),text=element_text(size=12),legend.position="none")
+p4 = FeaturePlot(srt_filter_cc,features = c("Vpreb1"),pt.size=0.5,max.cutoff="q95",ncol=4,cols=BlueAndRed())+theme(line = element_blank(),
+                                                                            axis.text  =element_blank(),axis.title = element_blank(),text=element_text(size=12),legend.position="none")
+
+ggarrange(p1,p2,p3,p4,ncol=2,nrow=2)
+ggsave("figs/umap_marker_genes.pdf",width = 5,height = 5)
+```
+
+```{r}
+p1 = FeaturePlot(srt_filter_cc,features = c("<Y780/60-A>: CD150 PE Cy7"),pt.size=0.5,max.cutoff="q95",ncol=4,cols=BlueAndRed())+labs(title="CD150")+theme(line = element_blank(),text=element_text(size=12),
+                                                                            axis.text  =element_blank(),axis.title = element_blank(),legend.position="none")
+
+p2 = FeaturePlot(srt_filter_cc,features = c("<Y582/15-A>: Flt3 PE"),pt.size=0.5,max.cutoff="q95",ncol=4,cols=BlueAndRed())+labs(title="CD135 (Flt3)")+theme(line = element_blank(),text=element_text(size=12),
+                                                                            axis.text  =element_blank(),axis.title = element_blank(),legend.position="none")
+
+p3 = FeaturePlot(srt_filter_cc,features = c("<B530/30-A>: Dach1 GFP"),pt.size=0.5,max.cutoff="q95",ncol=4,cols=BlueAndRed())+labs(title=" Dach1-GFP")+theme(line = element_blank(),text=element_text(size=12),
+                                                                            axis.text  =element_blank(),axis.title = element_blank(),legend.position="none")
+p4 = FeaturePlot(srt_filter_cc,features = c("<V660/20-A>: IL7R BV650"),pt.size=0.5,max.cutoff="q95",ncol=4,cols=BlueAndRed())+labs(title="IL7R")+theme(line = element_blank(),text=element_text(size=12),
+                                                                            axis.text  =element_blank(),axis.title = element_blank(),legend.position="none")
+
+ggarrange(p1,p2,p3,p4,ncol=4,nrow=1)
+ggsave("figs/umap_marker_FACS.pdf",width = 10,height = 3)
+```
+
+
+```{r}
+gg_color_hue <- function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+pal = gg_color_hue(4)
+names(pal) = c("CLP","LMPP","LT + MPP2","ST + MPP3")
+pdf("figs/umap_LPP_lineage.pdf")
+plot(srt_filter_cc@reductions$umap@cell.embeddings, col = pal[srt_filter_cc$FACS_CT], pch=16, cex=0.9,asp = 1,axes = FALSE,xlab='',ylab='')
+lines(sds@curves$curve3, lwd=2, col='black')
+legend('topleft',legend=levels(as.factor(srt_filter_cc$FACS_CT)),col=pal,pch=16,title="FACS gating")
+dev.off()
+
+pdf("figs/umap_all_lineage.pdf")
+plot(srt_filter_cc@reductions$umap@cell.embeddings, col = col9[srt_filter_cc$seurat_clusters], pch=16, cex=0.7,asp = 1,axes = FALSE,xlab='',ylab='')
+lines(sds, lwd=2, col='black')
+legend('topleft',legend=names(col9),col=col9,pch=16,title="clusters")
+dev.off()
+```
+
+
+
+
+```{r}
+clp_de = FindMarkers(srt_filter_cc,ident.1="1",ident.2 = "6",verbose = FALSE)
+clp_de$gene = rownames(clp_de)
+clp_lpp_de = FindMarkers(srt_filter_cc,ident.1=c("1","6"),verbose = FALSE)
+clp_lpp_de = clp_lpp_de[clp_lpp_de$avg_logFC>0,]
+clp_lpp_de$gene = rownames(clp_lpp_de)
+clp_lpp_top = clp_lpp_de %>% top_n(n=35,wt=avg_logFC) 
+
+clp_pos = clp_de %>% top_n(n=35,wt=avg_logFC) 
+clp_neg = clp_de %>% top_n(n=35,wt=-avg_logFC) 
+
+clp_lpp_top = clp_lpp_top[!(clp_lpp_top$gene %in% c(clp_pos$gene,clp_neg$gene)),]
+
+```
+
+
+
+
+
+```{r}
+srt_filter_cc$LMPP_gate = "others"
+srt_filter_cc$LMPP_gate[srt_filter_cc$FACS_CT=="LMPP"] = "LMPP"
+
+p1 = DimPlot(srt_filter_cc, group.by = "LMPP_gate", order=c("LMPP","others"), cols = c("grey","black"), label = FALSE)+theme(legend.position = "none",line = element_blank(),
+                                                                            axis.text  =element_blank(),
+        title = element_blank())
+
+srt_filter_cc$flt_gate = "others"
+srt_filter_cc$flt_gate[srt_filter_cc$`<Y582/15-A>: Flt3 PE`>3.57 & srt_filter_cc$`<B530/30-A>: Dach1 GFP`>2.8 & srt_filter_cc$`<V660/20-A>: IL7R BV650`<3] = "Dach1+LMPP"
+
+p2 = DimPlot(srt_filter_cc, group.by = "flt_gate", order=c("Dach1+LMPP","others"), cols = c("grey","black"), label = FALSE)+theme(legend.position = "none",line = element_blank(),
+                                                                            axis.text  =element_blank(),
+        title = element_blank())
+
+srt_filter_cc$LPP_gate = "others"
+srt_filter_cc$LPP_gate[srt_filter_cc$`<Y582/15-A>: Flt3 PE`>3.57 & srt_filter_cc$`<B530/30-A>: Dach1 GFP`<2.5 & srt_filter_cc$`<V660/20-A>: IL7R BV650`<3] = "LPP"
+
+p3 = DimPlot(srt_filter_cc, group.by = "LPP_gate", order=c("LPP","others"), cols = c("grey","black"), label = FALSE)+theme(legend.position = "none",line = element_blank(),
+                                                                            axis.text  =element_blank(),
+        title = element_blank())
+
+srt_filter_cc$CLP_gate = "others"
+srt_filter_cc$CLP_gate[srt_filter_cc$FACS_CT=="CLP"] = "CLP"
+
+p4 = DimPlot(srt_filter_cc, group.by = "CLP_gate", order=c("CLP","others"), cols = c("grey","black"), label = FALSE)+theme(legend.position = "none",line = element_blank(),
+                                                                            axis.text  =element_blank(),
+        title = element_blank())
+
+ggarrange(p1,p2,p3,p4,ncol=4,nrow=1)
+ggsave("figs/umap_LPP_gate.pdf",width = 12,height = 3)
+```
+
+```{r}
+combined_gate = rep(".",ncol(srt_filter_cc))
+combined_gate[srt_filter_cc$LMPP_gate=="LMPP"] = "other LMPPs"
+combined_gate[srt_filter_cc$flt_gate =="Dach1+LMPP"] = "Dach1+LMPP"
+combined_gate[srt_filter_cc$LPP_gate =="LPP"] = "LPP"
+combined_gate[srt_filter_cc$CLP_gate =="CLP"] = "CLP"
+```
+
+```{r}
+facs_new = srt_filter_cc$FACS_CT
+facs_new[combined_gate=="Dach1+LMPP"] = "Dach1+LMPP"
+facs_new[combined_gate=="LPP"] = "LPP"
+
+ggplot(data=NULL,aes(x=srt_filter_cc$`<Y582/15-A>: Flt3 PE`[!srt_filter_cc$FACS_CT=="CLP"],y=srt_filter_cc$`<B530/30-A>: Dach1 GFP`[!srt_filter_cc$FACS_CT=="CLP"],col=facs_new[!srt_filter_cc$FACS_CT=="CLP"]))+
+  geom_point(size=1)+
+  theme_bw()+
+  scale_color_manual(values = c("LMPP"="#E7B800", "LT + MPP2"="#00AFBB","ST + MPP3"="#CC79A7","Dach1+LMPP"="#0CA552","LPP"="#EA2424","CLP"="#9F4A18")) +
+  #scale_color_manual(values = pal)+
+  labs(x="CD135 (Flt3)",y="Dach1-GFP",col="")+
+  theme(legend.position="top",panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+ggsave("figs/CD135_Dach1_col_by_FACS.pdf",width = 4.,height = 4.)
+```
+
+```{r}
+pal =  c("LMPP"="#E7B800", "LT + MPP2"="#00AFBB","ST + MPP3"="#CC79A7","Dach1+LMPP"="#0CA552","LPP"="#EA2424","CLP"="#9F4A18","."="grey80")
+combined_gate_n = facs_new
+combined_gate_n[!(srt_filter_cc$seurat_clusters %in% sds@lineages$Lineage3)] = "."
+pdf("figs/umap_LPP_lineage.pdf")
+plot(srt_filter_cc@reductions$umap@cell.embeddings, col = pal[combined_gate_n], pch=16, cex=0.9,asp = 1,axes = FALSE,xlab='',ylab='')
+lines(sds@curves$curve3, lwd=2, col='black')
+legend('topright',legend=names(pal) ,col=pal,pch=16,title="FACS gating",pt.cex=1.5,cex=1.2)
+dev.off()
+
+#pdf("figs/umap_all_lineage.pdf")
+#plot(srt_filter_cc@reductions$umap@cell.embeddings, col = pal[srt_filter_cc$FACS_CT], pch=16, cex=0.7,asp = 1,axes = FALSE,xlab='',ylab='')
+#lines(sds, lwd=2, col='black')
+#legend('topleft',legend=levels(as.factor(srt_filter_cc$FACS_CT)),col=pal,pch=16,title="FACS gating")
+#dev.off()
+```
+
+```{r}
+top_ge = c("Mpl","Hlf","Satb1","Il12a","Vpreb1","Blnk","Cd79a","Rag1","Pax5","Ly6d","Dntt","Irf8","Notch1","Plac8")
+
+tmp_mat = srt_filter_cc@assays$integrated@scale.data[unique(top_ge),rownames(order_df)]
+#tmp_mat = tmp_mat[,colnames(tmp_mat) %in% rownames(srt_filter_cc@meta.data)[srt_filter_cc$FACS_CT %in% c("CLP","LMPP")]]
+tmp_mat[tmp_mat>2.5] = 2.5
+tmp_mat[tmp_mat<(-2.5)] = -2.5
+
+anno_df = data.frame(clusters=srt_filter_cc$seurat_clusters,
+                     FACS_gating=facs_new,
+                     Dach1GFP=srt_filter_cc$`<B530/30-A>: Dach1 GFP`,
+                     CD135=srt_filter_cc$`<Y582/15-A>: Flt3 PE`,
+                     CD127=srt_filter_cc$`<V660/20-A>: IL7R BV650`,
+                     #CD150=srt_filter_cc$`<Y780/60-A>: CD150 PE Cy7`,
+                     stringsAsFactors = FALSE)
+
+annotation_colors = list(
+  clusters=col9,
+  Dach1GFP=BlueAndRed(),
+  CD150=BlueAndRed(),
+  CD135=BlueAndRed(),
+  CD127=BlueAndRed(),
+  proB_CLP_BM=BlueAndRed(),
+  SC_CMP_BM=BlueAndRed(),
+  SC_MEP_BM=BlueAndRed(),
+  SC_STSL_BM=BlueAndRed(),
+  SC_LTSL_BM=BlueAndRed(),
+  FACS_gating=pal
+)
+
+pheatmap(tmp_mat,
+         cluster_cols = FALSE, 
+         cluster_rows = TRUE,
+         annotation_col = anno_df,
+         annotation_colors=annotation_colors,
+         show_colnames = FALSE,
+         color=PurpleAndYellow(),
+         filename="figs/heatmap_slingshot_S.pdf",width = 5,height = 3.5)
+
+pheatmap(tmp_mat,
+         cluster_cols = FALSE, 
+         cluster_rows = TRUE,
+         annotation_col = anno_df,
+         annotation_colors=annotation_colors,
+         show_colnames = FALSE,
+         color=PurpleAndYellow(),
+         filename="figs/heatmap_slingshot_L.pdf",width = 6.5,height = 10)
+```
+
+
+```{r}
+srt_filter_cc$clp_lpp_gate = srt_filter_cc$CLP_gate 
+srt_filter_cc$clp_lpp_gate[srt_filter_cc$LPP_gate=="LPP"] = "LPP"
+
+srt_filter_cc_lpp = srt_filter_cc[,!(srt_filter_cc$clp_lpp_gate == "others")]
+```
+
+
+```{r}
+p1 = VlnPlot(srt_filter_cc_lpp,features=c("Il12a"),pt.size=0.3,group.by="clp_lpp_gate")+scale_fill_manual(values = c("#FA9A95","#C30000"))+theme(legend.position = "none",axis.title = element_blank(),axis.text.x = element_blank())
+p2 = VlnPlot(srt_filter_cc_lpp,features=c("Satb1"),pt.size=0.3,group.by="clp_lpp_gate")+scale_fill_manual(values = c("#FA9A95","#C30000"))+theme(legend.position = "none",axis.title = element_blank(),axis.text.x = element_blank())
+p3 = VlnPlot(srt_filter_cc_lpp,features=c("Macroh2a1"),pt.size=0.3,group.by="clp_lpp_gate")+scale_fill_manual(values = c("#FA9A95","#C30000"))+theme(legend.position = "none",axis.title = element_blank(),axis.text.x = element_blank())
+p4 = VlnPlot(srt_filter_cc_lpp,features=c("Ncf1"),pt.size=0.3,group.by="clp_lpp_gate")+scale_fill_manual(values = c("#FA9A95","#C30000"))+theme(legend.position = "none",axis.title = element_blank(),axis.text.x = element_blank())
+p5 = VlnPlot(srt_filter_cc_lpp,features=c("Irf8"),pt.size=0.3,group.by="clp_lpp_gate")+scale_fill_manual(values = c("#FA9A95","#C30000"))+theme(legend.position = "none",axis.title = element_blank(),axis.text.x = element_blank())
+p6 = VlnPlot(srt_filter_cc_lpp,features=c("Dntt"),pt.size=0.3,group.by="clp_lpp_gate")+scale_fill_manual(values = c("#FA9A95","#C30000"))+theme(legend.position = "none",axis.title = element_blank(),axis.text.x = element_blank())
+p7 = VlnPlot(srt_filter_cc_lpp,features=c("Rag1"),pt.size=0.3,group.by="clp_lpp_gate")+scale_fill_manual(values = c("#FA9A95","#C30000"))+theme(legend.position = "none",axis.title = element_blank(),axis.text.x = element_blank())
+p8 = VlnPlot(srt_filter_cc_lpp,features=c("Vpreb3"),pt.size=0.3,group.by="clp_lpp_gate")+scale_fill_manual(values = c("#FA9A95","#C30000"))+theme(legend.position = "none",axis.title = element_blank(),axis.text.x = element_blank())
+
+ggarrange(p1,p2,p3,p4,p5,p6,p7,p8,ncol=2,nrow=4,hjust=T)
+ggsave("figs/vln_plot_marker_LPPCLP.pdf",width = 5,height = 6)
+```
+
+```{r}
+table(srt_filter_cc_lpp@assays$integrated@scale.data["Rag1",srt_filter_cc_lpp$clp_lpp_gate=="LPP"]>1)[2]/sum(table(srt_filter_cc_lpp@assays$integrated@scale.data["Rag1",srt_filter_cc_lpp$clp_lpp_gate=="LPP"]>1))
+
+table(srt_filter_cc_lpp@assays$integrated@scale.data["Rag1",srt_filter_cc_lpp$clp_lpp_gate=="CLP"]>1)[2]/sum(table(srt_filter_cc_lpp@assays$integrated@scale.data["Rag1",srt_filter_cc_lpp$clp_lpp_gate=="CLP"]>1))
+```
+
+
+
+```{r}
+srt_filter_cc_sel = srt_filter_cc
+
+srt_filter_cc_sel = srt_filter_cc_sel[,srt_filter_cc_sel$seurat_clusters %in% c(1,6)]
+
+DotPlot(srt_filter_cc_sel, features = c("Vpreb1","Blnk","Cd79a","Rag1","Pax5","Ly6d","Dntt","Irf8","Notch1","Plac8","Satb1","Il12a"), dot.scale = 8) + RotatedAxis()
+```
+
+```{r}
+srt_filter_cc.markers_sel = srt_filter_cc.markers[srt_filter_cc.markers$p_val_adj<0.001,]
+srt_filter_cc.markers_sel$cluster = as.numeric(srt_filter_cc.markers_sel$cluster)
+write.csv(srt_filter_cc.markers_sel,file = "scRNAseq_Seurat_markers.csv",row.names = FALSE)
+```
+
+```{r}
+table(srt_filter_cc$LPP_gate=="LPP",srt_filter_cc$seurat_clusters)
+table(srt_filter_cc$flt_gate=="flt3_high",srt_filter_cc$seurat_clusters)
+```
+
+```{r}
+VennDiagram::venn.diagram(list(rownames(srt_filter_cc@meta.data)[srt_filter_cc$flt_gate=="flt3_high"],
+                               rownames(srt_filter_cc@meta.data)[srt_filter_cc$seurat_clusters == 1]),
+                          category.names = c("flt3_high","cluster2"),filename="venn_flthigh.tiff")
+
+VennDiagram::venn.diagram(list(rownames(srt_filter_cc@meta.data)[srt_filter_cc$LPP_gate=="LPP"],
+                               rownames(srt_filter_cc@meta.data)[srt_filter_cc$seurat_clusters == 1]),
+                          category.names = c("LPP","cluster2"),filename="venn_LPP.tiff")
+
+VennDiagram::venn.diagram(list(rownames(srt_filter_cc@meta.data)[srt_filter_cc$LMPP_gate=="LMPP"],
+                               rownames(srt_filter_cc@meta.data)[srt_filter_cc$seurat_clusters == 1]),
+                          category.names = c("LMPP","cluster2"),filename="venn_LMPP.tiff")
+
+VennDiagram::venn.diagram(list(rownames(srt_filter_cc@meta.data)[srt_filter_cc$CLP_gate=="CLP"],
+                               rownames(srt_filter_cc@meta.data)[srt_filter_cc$LPP_gate=="LPP"],
+                               rownames(srt_filter_cc@meta.data)[srt_filter_cc$flt_gate=="flt3_high"],
+                               rownames(srt_filter_cc@meta.data)[srt_filter_cc$LMPP_gate=="LMPP"],
+                               rownames(srt_filter_cc@meta.data)[srt_filter_cc$seurat_clusters == 1]),
+                          category.names = c("CLP","LPP","flt3_high","LMPP","cluster2"),filename="venn_all.tiff")
+```
+
+
+```{r}
+write.csv(rownames(srt_filter_cc@meta.data)[srt_filter_cc$CLP_gate=="CLP"],file = "CLP_cells.csv",quote = FALSE,row.names = FALSE)
+write.csv(rownames(srt_filter_cc@meta.data)[srt_filter_cc$flt_gate=="flt3_high"],file = "flt3_high_cells.csv",quote = FALSE,row.names = FALSE)
+write.csv(rownames(srt_filter_cc@meta.data)[srt_filter_cc$LPP_gate=="LPP"],file = "LPP_cells.csv",quote = FALSE,row.names = FALSE)
+write.csv(rownames(srt_filter_cc@meta.data)[srt_filter_cc$LMPP_gate=="LMPP"],file = "LMPP_cells.csv",quote = FALSE,row.names = FALSE)
+
+write.csv(rownames(srt_filter_cc@meta.data)[srt_filter_cc$seurat_clusters == 1],file = "CL2_cells.csv",quote = FALSE,row.names = FALSE)
+```
+
+
+```{r}
+CLP_c = rownames(srt_filter_cc@meta.data)[srt_filter_cc$CLP_gate=="CLP"]
+flt3_c = rownames(srt_filter_cc@meta.data)[srt_filter_cc$flt_gate=="flt3_high"]
+LPP_c = rownames(srt_filter_cc@meta.data)[srt_filter_cc$LPP_gate=="LPP"]
+LMPP_c = rownames(srt_filter_cc@meta.data)[srt_filter_cc$LMPP_gate=="LMPP"]
+cl2_c = rownames(srt_filter_cc@meta.data)[srt_filter_cc$seurat_clusters == 1]
+
+cl2_in_others = c(sum(cl2_c %in% CLP_c),
+                  sum(cl2_c %in% flt3_c),
+                  sum(cl2_c %in% LPP_c),
+                  sum(cl2_c %in% LMPP_c))
+
+c1 = c(sum(!(cl2_c %in% CLP_c)),
+                  sum(!(cl2_c %in% flt3_c)),
+                  sum(!(cl2_c %in% LPP_c)),
+                  sum(!(cl2_c %in% LMPP_c)))
+
+c2 = c(sum(!(CLP_c %in% cl2_c)),
+                  sum(!(flt3_c %in% cl2_c)),
+                  sum(!(LPP_c  %in% cl2_c)),
+                  sum(!(LMPP_c %in% cl2_c)))
+
+cl2_in_others
+x = cl2_in_others/length(cl2_c)
+y = cl2_in_others/c(length(CLP_c),
+                length(flt3_c),
+                length(LPP_c),
+                length(LMPP_c))
+```
+
+```{r}
+plot(x,y)
+text(x,y, c("CLP","FLT3_high","LPP","LMPP"),
+     cex=0.65, pos=1,col="red") 
+```
+
+
+```{r}
+
+```
+
